@@ -44,7 +44,7 @@ export function registerAdmin(bot: Bot<BotContext>) {
     const out = await withTx(async (c) => {
       const p = (
         await c.query<{ id: number; user_id: number; amount: number }>(
-          "UPDATE payments SET status='approved' WHERE id=$1 AND status='pending' RETURNING id, user_id, amount",
+          "UPDATE payments SET status='approved', approved_at=now() WHERE id=$1 AND status='pending' RETURNING id, user_id, amount",
           [pid],
         )
       ).rows[0];

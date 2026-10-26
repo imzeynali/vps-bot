@@ -60,6 +60,10 @@ ALTER TABLE users    ADD COLUMN IF NOT EXISTS state_data JSONB;
 ALTER TABLE services ADD COLUMN IF NOT EXISTS location TEXT;
 ALTER TABLE services ADD COLUMN IF NOT EXISTS os TEXT;
 ALTER TABLE services ADD COLUMN IF NOT EXISTS power TEXT NOT NULL DEFAULT 'on';
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;
+UPDATE payments SET approved_at = created_at WHERE status = 'approved' AND approved_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_payments_approved ON payments(status, approved_at);
+CREATE INDEX IF NOT EXISTS idx_users_created ON users(created_at);
 
 INSERT INTO plans (name, cpu, ram_gb, disk_gb, hourly_price)
 SELECT * FROM (VALUES

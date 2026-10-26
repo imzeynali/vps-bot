@@ -93,7 +93,7 @@ export function registerWallet(bot: Bot<BotContext>) {
       [id, amount, fileId],
     );
     await setState(id, null);
-    await ctx.reply("✅ رسید ثبت شد. پس از تأیید ادمین، حساب شما شارژ می‌شود.", { reply_markup: mainMenu() });
+    await ctx.reply("✅ رسید ثبت شد. پس از تأیید ادمین، حساب شما شارژ می‌شود.", { reply_markup: mainMenu(id) });
 
     const kb = new InlineKeyboard().text("✅ تأیید", `payok:${pay!.id}`).text("❌ رد", `payno:${pay!.id}`);
     for (const admin of config.admins) {

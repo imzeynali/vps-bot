@@ -23,12 +23,12 @@ export function registerStart(bot: Bot<BotContext>) {
 
     await ctx.reply("👋 به ربات فروش سرور مجازی ایران خوش آمدید.\nپرداخت به‌صورت <b>ساعتی</b> است.", {
       parse_mode: "HTML",
-      reply_markup: mainMenu(),
+      reply_markup: mainMenu(id),
     });
   });
 
   bot.callbackQuery("home", async (ctx) => {
     await setState(uid(ctx), null);
-    await show(ctx, "🏠 منوی اصلی:", mainMenu());
+    await show(ctx, "🏠 منوی اصلی:", mainMenu(uid(ctx)));
   });
 }

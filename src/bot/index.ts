@@ -7,6 +7,7 @@ import { registerBuy } from "./handlers/buy";
 import { registerServices } from "./handlers/services";
 import { registerWallet } from "./handlers/wallet";
 import { registerAdmin } from "./handlers/admin";
+import { registerAdminPanel } from "./handlers/adminPanel";
 
 const g = globalThis as unknown as { __bot?: Bot<BotContext> };
 
@@ -30,6 +31,7 @@ function createBot(): Bot<BotContext> {
 
   registerStart(bot);
   registerAdmin(bot);
+  registerAdminPanel(bot); // باید قبل از registerWallet باشد (پیام همگانی)
   registerBuy(bot);
   registerServices(bot);
   registerWallet(bot); // شامل message:text و message:photo؛ آخر ثبت شود
