@@ -54,6 +54,16 @@ CREATE TABLE IF NOT EXISTS referral_earnings (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS balance_adjustments (
+    id            SERIAL PRIMARY KEY,
+    admin_id      BIGINT NOT NULL,
+    user_id       BIGINT NOT NULL REFERENCES users(id),
+    amount        BIGINT NOT NULL,                  -- مثبت = افزایش، منفی = کاهش
+    balance_after BIGINT NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_baladj_user ON balance_adjustments(user_id);
+
 -- ارتقا از نسخه قبلی (پایتون)
 ALTER TABLE users    ADD COLUMN IF NOT EXISTS state TEXT;
 ALTER TABLE users    ADD COLUMN IF NOT EXISTS state_data JSONB;

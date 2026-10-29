@@ -2,9 +2,9 @@ import { GrammyError, InlineKeyboard } from "grammy";
 import type { Api, Bot } from "grammy";
 import type { BotContext } from "../context";
 import { config } from "@/lib/config";
-import { query, queryOne } from "@/lib/db";
+import { query, queryOne, withTx } from "@/lib/db";
 import { getState, setState } from "@/lib/state";
-import { alert, esc, fmt, show, uid } from "../helpers";
+import { alert, esc, fmt, normalizeDigits, show, uid } from "../helpers";
 
 const PAGE_SIZE = 10;
 const TZ = "Asia/Tehran";
@@ -22,6 +22,7 @@ const panelKb = () =>
     .text("📊 آمار ربات", "adm:stats")
     .row()
     .text("📢 ارسال پیام همگانی", "adm:bc")
+    .text("💰 مدیریت موجودی", "adm:bal")
     .row()
     .text("🔙 منوی اصلی", "home");
 
@@ -164,6 +165,35 @@ async function runBroadcast(api: Api, adminId: number, fromChat: number, message
     .catch(() => {});
 }
 
+// ───────────────────────── مدیریت موجودی ─────────────────────────
+const MAX_ADJUST = 1_000_000_000_000; // سقف مبلغ در هر عملیات (تومان)
+
+type BalUser = { id: number; username: string | null; balance: number; created_at: Date };
+
+const balCancelKb = () => new InlineKeyboard().text("❌ انصراف", "adm:balx");
+
+function userCard(u: BalUser) {
+  return (
+    `👤 <b>اطلاعات کاربر</b>\n\n` +
+    `🆔 آیدی عددی: <code>${u.id}</code>\n` +
+    `📛 یوزرنیم: ${u.username ? "@" + esc(u.username) : "ندارد"}\n` +
+    `💰 موجودی فعلی: <b>${fmt(u.balance)}</b> تومان\n` +
+    `📅 عضویت: ${jdate(u.created_at)}`
+  );
+}
+
+const balActionKb = () =>
+  new InlineKeyboard()
+    .text("➕ افزایش موجودی", "adm:bal:add")
+    .text("➖ کاهش موجودی", "adm:bal:sub")
+    .row()
+    .text("🔍 کاربر دیگر", "adm:bal")
+    .row()
+    .text("🔙 پنل مدیریت", "admin");
+
+const findUser = (id: number) =>
+  queryOne<BalUser>("SELECT id, username, balance, created_at FROM users WHERE id=$1", [id]);
+
 // ───────────────────────── ثبت هندلرها ─────────────────────────
 export function registerAdminPanel(bot: Bot<BotContext>) {
   const adm = bot.filter(isAdmin);
@@ -189,6 +219,143 @@ export function registerAdminPanel(bot: Bot<BotContext>) {
   adm.callbackQuery("adm:stats", async (ctx) => {
     const kb = new InlineKeyboard().text("🔄 بروزرسانی", "adm:stats").row().text("🔙 پنل مدیریت", "admin");
     await show(ctx, await statsText(), kb);
+  });
+
+  // ── مدیریت موجودی: ۱) آیدی کاربر ۲) افزایش/کاهش ۳) مبلغ ۴) تأیید ──
+  adm.callbackQuery("adm:bal", async (ctx) => {
+    await setState(uid(ctx), "bal_id");
+    await show(
+      ctx,
+      "💰 <b>مدیریت موجودی</b>\n\n<b>آیدی عددی تلگرام</b> کاربر را بفرستید:\n(کاربر باید حداقل یک‌بار ربات را استارت کرده باشد)",
+      balCancelKb(),
+    );
+  });
+
+  adm.callbackQuery("adm:balx", async (ctx) => {
+    await setState(uid(ctx), null);
+    await show(ctx, PANEL_TEXT, panelKb(), "لغو شد");
+  });
+
+  adm.on("message:text", async (ctx, next) => {
+    const st = await getState(uid(ctx));
+    if (!st.state?.startsWith("bal_")) return next();
+    if (ctx.message.text.startsWith("/")) return next();
+    const txt = normalizeDigits(ctx.message.text);
+
+    // مرحله ۱: دریافت آیدی عددی
+    if (st.state === "bal_id") {
+      if (!/^\d{1,15}$/.test(txt) || Number(txt) <= 0) {
+        return void ctx.reply("❌ آیدی عددی معتبر بفرستید (فقط عدد).", { reply_markup: balCancelKb() });
+      }
+      const u = await findUser(Number(txt));
+      if (!u) {
+        return void ctx.reply("❌ کاربری با این آیدی در ربات پیدا نشد.\nآیدی دیگری بفرستید:", {
+          reply_markup: balCancelKb(),
+        });
+      }
+      await setState(uid(ctx), "bal_user", { target: u.id });
+      return void ctx.reply(userCard(u) + "\n\nچه کاری انجام شود؟", { parse_mode: "HTML", reply_markup: balActionKb() });
+    }
+
+    // مرحله ۳: دریافت مبلغ
+    if (st.state === "bal_amount") {
+      const target = Number(st.data?.target);
+      const op = st.data?.op === "sub" ? "sub" : "add";
+      if (!/^\d+$/.test(txt) || Number(txt) <= 0 || Number(txt) > MAX_ADJUST) {
+        return void ctx.reply("❌ یک مبلغ معتبر (عدد مثبت، به تومان) بفرستید.", { reply_markup: balCancelKb() });
+      }
+      const amount = Number(txt);
+      const u = await findUser(target);
+      if (!u) {
+        await setState(uid(ctx), null);
+        return void ctx.reply("❌ کاربر پیدا نشد.", { reply_markup: toPanelKb() });
+      }
+      if (op === "sub" && amount > u.balance) {
+        return void ctx.reply(
+          `❌ موجودی کاربر (${fmt(u.balance)} تومان) کمتر از این مبلغ است.\nمبلغ کمتری بفرستید:`,
+          { reply_markup: balCancelKb() },
+        );
+      }
+      await setState(uid(ctx), "bal_confirm", { target, op, amount });
+      const after = op === "add" ? u.balance + amount : u.balance - amount;
+      return void ctx.reply(
+        `${userCard(u)}\n\n` +
+          `${op === "add" ? "➕ افزایش" : "➖ کاهش"}: <b>${fmt(amount)}</b> تومان\n` +
+          `📊 موجودی بعد از عملیات: <b>${fmt(after)}</b> تومان\n\nتأیید می‌کنید؟`,
+        {
+          parse_mode: "HTML",
+          reply_markup: new InlineKeyboard().text("✅ تأیید", "adm:bal:ok").text("❌ انصراف", "adm:balx"),
+        },
+      );
+    }
+
+    return next();
+  });
+
+  // مرحله ۲: انتخاب افزایش یا کاهش
+  adm.callbackQuery(/^adm:bal:(add|sub)$/, async (ctx) => {
+    const st = await getState(uid(ctx));
+    const target = Number(st.data?.target);
+    if (!st.state?.startsWith("bal_") || !Number.isFinite(target)) {
+      return alert(ctx, "جلسه منقضی شده؛ دوباره از «مدیریت موجودی» شروع کنید.");
+    }
+    const op = ctx.match[1];
+    await setState(uid(ctx), "bal_amount", { target, op });
+    await show(
+      ctx,
+      `${op === "add" ? "➕ <b>افزایش موجودی</b>" : "➖ <b>کاهش موجودی</b>"}\n\n` +
+        `کاربر: <code>${target}</code>\nمبلغ را به <b>تومان</b> و به‌صورت عدد بفرستید:`,
+      balCancelKb(),
+    );
+  });
+
+  // مرحله ۴: اعمال تغییر (اتمیک؛ با دوبار کلیک دوبار اعمال نمی‌شود)
+  adm.callbackQuery("adm:bal:ok", async (ctx) => {
+    const row = await queryOne<{ data: { target: number; op: "add" | "sub"; amount: number } | null }>(
+      `WITH old AS (SELECT state_data FROM users WHERE id=$1 AND state='bal_confirm' FOR UPDATE)
+       UPDATE users SET state=NULL, state_data=NULL FROM old
+       WHERE users.id=$1 RETURNING old.state_data AS data`,
+      [uid(ctx)],
+    );
+    if (!row?.data) return alert(ctx, "عملیاتی برای تأیید وجود ندارد. دوباره شروع کنید.");
+    const { target, op, amount } = row.data;
+    const delta = op === "add" ? amount : -amount;
+
+    const newBalance = await withTx(async (c) => {
+      const r = await c.query<{ balance: number }>(
+        `UPDATE users SET balance = balance + $1
+         WHERE id=$2 AND balance + $1 >= 0
+         RETURNING balance`,
+        [delta, target],
+      );
+      if (r.rows.length === 0) return null;
+      await c.query(
+        "INSERT INTO balance_adjustments (admin_id, user_id, amount, balance_after) VALUES ($1,$2,$3,$4)",
+        [uid(ctx), target, delta, r.rows[0].balance],
+      );
+      return r.rows[0].balance;
+    });
+
+    if (newBalance === null) {
+      return show(ctx, "❌ انجام نشد؛ موجودی کاربر برای این کاهش کافی نیست یا کاربر وجود ندارد.", toPanelKb());
+    }
+
+    await ctx.api
+      .sendMessage(
+        target,
+        `${op === "add" ? "➕" : "➖"} موجودی حساب شما توسط مدیریت <b>${fmt(amount)}</b> تومان ` +
+          `${op === "add" ? "افزایش" : "کاهش"} یافت.\n💰 موجودی فعلی: <b>${fmt(newBalance)}</b> تومان`,
+        { parse_mode: "HTML" },
+      )
+      .catch(() => {});
+
+    await show(
+      ctx,
+      `✅ <b>انجام شد</b>\n\n🆔 کاربر: <code>${target}</code>\n` +
+        `${op === "add" ? "➕ افزایش" : "➖ کاهش"}: ${fmt(amount)} تومان\n` +
+        `💰 موجودی جدید: <b>${fmt(newBalance)}</b> تومان`,
+      new InlineKeyboard().text("🔍 کاربر دیگر", "adm:bal").row().text("🔙 پنل مدیریت", "admin"),
+    );
   });
 
   // ── پیام همگانی: ۱) دریافت پیام ۲) پیش‌نمایش و تأیید ۳) ارسال ──
