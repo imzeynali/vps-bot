@@ -24,6 +24,8 @@ const panelKb = () =>
     .text("📢 ارسال پیام همگانی", "adm:bc")
     .text("💰 مدیریت موجودی", "adm:bal")
     .row()
+    .text("🔌 اتصال Virtualizor", "adm:virt")
+    .row()
     .text("🔙 منوی اصلی", "home");
 
 const toPanelKb = () => new InlineKeyboard().text("🔙 پنل مدیریت", "admin");

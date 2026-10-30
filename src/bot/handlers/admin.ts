@@ -7,20 +7,25 @@ import { alert, fmt, uid } from "../helpers";
 const isAdmin = (ctx: BotContext) => config.admins.includes(uid(ctx));
 
 export function registerAdmin(bot: Bot<BotContext>) {
-  // /addplan نام|cpu|ram|disk|قیمت_ساعتی
+  // /addplan نام|cpu|ram|disk|قیمت_ساعتی[|plid_در_virtualizor]
   bot.command("addplan", async (ctx) => {
     if (!isAdmin(ctx)) return;
     const parts = ctx.match.split("|").map((x) => x.trim());
-    const [name, cpu, ram, disk, price] = parts;
-    if (parts.length !== 5 || [cpu, ram, disk, price].some((x) => !/^\d+$/.test(x))) {
-      return void ctx.reply("فرمت: /addplan نام|cpu|ram|disk|قیمت_ساعتی");
+    const [name, cpu, ram, disk, price, plid] = parts;
+    if (
+      (parts.length !== 5 && parts.length !== 6) ||
+      [cpu, ram, disk, price].some((x) => !/^\d+$/.test(x)) ||
+      (plid !== undefined && !/^\d+$/.test(plid))
+    ) {
+      return void ctx.reply("فرمت: /addplan نام|cpu|ram|disk|قیمت_ساعتی[|شناسه_Plan_در_Virtualizor]");
     }
-    await query("INSERT INTO plans (name,cpu,ram_gb,disk_gb,hourly_price) VALUES ($1,$2,$3,$4,$5)", [
+    await query("INSERT INTO plans (name,cpu,ram_gb,disk_gb,hourly_price,virt_plid) VALUES ($1,$2,$3,$4,$5,$6)", [
       name,
       Number(cpu),
       Number(ram),
       Number(disk),
       Number(price),
+      plid ? Number(plid) : null,
     ]);
     await ctx.reply("✅ پلن اضافه شد.");
   });

@@ -37,5 +37,5 @@ export async function show(ctx: BotContext, text: string, kb: InlineKeyboard, to
 }
 
 export async function alert(ctx: BotContext, text: string) {
-  await ctx.answerCallbackQuery({ text, show_alert: true });
+  await ctx.answerCallbackQuery({ text: text.slice(0, 200), show_alert: true }); // سقف تلگرام ۲۰۰ کاراکتر
 }

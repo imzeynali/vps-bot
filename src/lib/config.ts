@@ -17,17 +17,32 @@ export const config = {
   minTopup: num(process.env.MIN_TOPUP, 10000),
   minBalanceToBuy: num(process.env.MIN_BALANCE_TO_BUY, 100000),
   refPercent: num(process.env.REF_PERCENT, 10),
+
+  // ── اتصال به پنل Virtualizor (Admin API) ──
+  virt: {
+    url: (process.env.VIRT_URL ?? "").trim().replace(/\/+$/, ""), // مثلاً https://panel.example.com:4085
+    apiKey: process.env.VIRT_API_KEY ?? "",
+    apiPass: process.env.VIRT_API_PASS ?? "",
+    insecureTls: process.env.VIRT_INSECURE_TLS === "1", // برای گواهی self-signed
+    type: process.env.VIRT_TYPE ?? "kvm", // kvm / openvz / lxc / xen ...
+    ownerUid: num(process.env.VIRT_OWNER_UID, 0), // کاربر مالک VPSها (اگر از قبل ساخته‌اید)
+    ownerEmail: process.env.VIRT_OWNER_EMAIL ?? "", // یا ایمیل+پسورد تا خودکار ساخته شود
+    ownerPass: process.env.VIRT_OWNER_PASS ?? "",
+    ipPoolId: num(process.env.VIRT_IP_POOL_ID, 0), // اختیاری
+    storageUuid: process.env.VIRT_STORAGE_UUID ?? "", // اختیاری (پنل‌های multi-storage)
+    timeoutMs: num(process.env.VIRT_TIMEOUT_MS, 60000),
+  },
+  // دامنه‌ی hostname سرورها: s<ID>.<vpsDomain>
+  vpsDomain: (process.env.VPS_DOMAIN || hostOf(process.env.APP_URL) || "vps.local").toLowerCase(),
 };
 
-export const LOCATIONS: Record<string, string> = {
-  iran: "🇮🇷 ایران",
-};
-
-export const OS_LIST: Record<string, string> = {
-  u20: "Ubuntu 20.04",
-  u22: "Ubuntu 22.04",
-  u24: "Ubuntu 24.04",
-};
+function hostOf(u?: string) {
+  try {
+    return u ? new URL(u).hostname : "";
+  } catch {
+    return "";
+  }
+}
 
 export const TERMS = `📜 <b>شرایط و ضوابط</b>
 

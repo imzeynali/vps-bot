@@ -8,7 +8,9 @@
     "start": "next start",
     "typecheck": "tsc --noEmit",
     "migrate": "tsx --env-file=.env.local scripts/migrate.ts",
-    "webhook": "tsx --env-file=.env.local scripts/set-webhook.ts"
+    "webhook": "tsx --env-file=.env.local scripts/set-webhook.ts",
+    "test:virt": "tsx --env-file=.env.local test/e2e.ts",
+    "virt:discover": "tsx --env-file=.env.local scripts/virt-discover.ts"
   },
   "dependencies": {
     "grammy": "^1.30.0",

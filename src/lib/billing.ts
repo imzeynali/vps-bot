@@ -1,6 +1,7 @@
 import type { Api } from "grammy";
 import { query, withTx } from "./db";
 import { powerAction } from "./provider";
+import { recoverStuck } from "./provisioning";
 
 type BillResult =
   | { kind: "skip" }
@@ -39,6 +40,7 @@ async function billService(id: number): Promise<BillResult> {
 }
 
 export async function runBilling(api: Api) {
+  await recoverStuck(api).catch((e) => console.error("recoverStuck error", e));
   const due = await query<{ id: number }>(
     `SELECT id FROM services
      WHERE status='active' AND last_billed_at <= now() - interval '1 hour'

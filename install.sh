@@ -268,6 +268,13 @@ MIN_TOPUP="${MIN_TOPUP}"
 MIN_BALANCE_TO_BUY="${MIN_BALANCE}"
 REF_PERCENT="${REF_PERCENT}"
 CRON_SECRET="${CRON_SECRET}"
+VIRT_URL="${VIRT_URL}"
+VIRT_API_KEY="${VIRT_API_KEY}"
+VIRT_API_PASS="${VIRT_API_PASS}"
+VIRT_INSECURE_TLS="${VIRT_INSECURE}"
+VIRT_TYPE="kvm"
+VIRT_OWNER_EMAIL="${VIRT_OWNER_EMAIL}"
+VIRT_OWNER_PASS="${VIRT_OWNER_PASS}"
 EOF
   chown "$APP_USER":"$APP_USER" "$ENV_FILE"
   chmod 600 "$ENV_FILE"
@@ -391,6 +398,18 @@ step_command() {
   mv -f "${CMD_PATH}.new" "$CMD_PATH"
 }
 
+step_virt_test() { app_run "npm run --silent virt:discover"; }
+
+do_virt() {
+  need_root
+  is_installed || { err "Not installed."; return 1; }
+  section "Virtualizor connection"
+  app_run "npm run --silent virt:discover" || err "Connection failed. Check VIRT_URL / VIRT_API_KEY / VIRT_API_PASS."
+  echo
+  info "Define what users can buy from the bot (Telegram, as admin):"
+  printf "    ${CYN}/addloc iran|🇮🇷 Iran|<serid>${R}\n    ${CYN}/addos u22|Ubuntu 22.04|<osid>${R}\n"
+}
+
 # ───────────────────────────── Install flow ─────────────────────────────
 do_install() {
   need_root; check_os
@@ -451,6 +470,19 @@ do_install() {
   prompt MIN_BALANCE    "Minimum balance to buy (Toman)" "100000" '^[0-9]+$' "Numbers only."
   prompt REF_PERCENT    "Referral commission (%)" "10"     '^[0-9]{1,2}$' "A number between 0 and 99."
 
+  section "Virtualizor panel (VPS provider)"
+  info "Admin API credentials: Virtualizor Admin → ${B}Configuration → API Credentials${R}. Leave URL empty to set it up later."
+  prompt VIRT_URL "Panel URL (e.g. https://panel.example.com:4085)" "" '^(https?://[^ ]+)?$' "Enter a full URL starting with http(s)://"
+  VIRT_URL="${VIRT_URL%/}"
+  VIRT_API_KEY=""; VIRT_API_PASS=""; VIRT_INSECURE="0"
+  VIRT_OWNER_EMAIL="bot@${DOMAIN}"; VIRT_OWNER_PASS="$(openssl rand -hex 12)"
+  if [[ -n "$VIRT_URL" ]]; then
+    prompt VIRT_API_KEY  "API key"  "" '^[A-Za-z0-9]{8,}$' "Letters and digits only."
+    prompt VIRT_API_PASS "API pass" "" '^[A-Za-z0-9]{8,}$' "Letters and digits only."
+    prompt VIRT_OWNER_EMAIL "E-mail of the panel user that will own the VPSs (auto-created)" "$VIRT_OWNER_EMAIL" '^[^@ ]+@[^@ ]+\.[^@ ]+$' "Enter a valid e-mail."
+    confirm "Does the panel use a self-signed / invalid SSL certificate?" n && VIRT_INSECURE="1"
+  fi
+
   PORT=3000; while port_in_use "$PORT"; do PORT=$((PORT + 1)); done
   WEBHOOK_SECRET="$(openssl rand -hex 24)"
   CRON_SECRET="$(openssl rand -hex 24)"
@@ -461,6 +493,7 @@ do_install() {
   printf "  %-18s %s\n" "Admin IDs"  "$ADMIN_IDS"
   printf "  %-18s %s\n" "Domain"     "https://${DOMAIN}"
   printf "  %-18s %s\n" "Repository" "$(repo_url) (${BRANCH})"
+  printf "  %-18s %s\n" "Virtualizor" "${VIRT_URL:-not configured (set later)}"
   printf "  %-18s %s\n" "App port"   "127.0.0.1:${PORT}"
   printf "  %-18s %s\n" "Install dir" "$APP_DIR"
   echo
@@ -490,6 +523,10 @@ do_install() {
     warn "Webhook not set (Telegram unreachable or SSL missing). Retry later: ${B}vpsbot webhook${R}"
   fi
   run_step "Installing the 'vpsbot' management command"                step_command
+  if [[ -n "$VIRT_URL" ]]; then
+    run_step "Testing Virtualizor API connection"                      step_virt_test \
+      || warn "Could not reach Virtualizor — check URL/API keys: ${B}vpsbot → Bot settings${R}"
+  fi
 
   section "Done"
   printf "  ${GRN}${B}✔ Installation complete!${R}\n\n"
@@ -601,32 +638,36 @@ settings_menu() {
   need_root
   is_installed || { err "Not installed."; pause; return; }
   load_meta
-  local keys=(BOT_TOKEN ADMIN_IDS SUPPORT_USERNAME CARD_NUMBER CARD_OWNER MIN_TOPUP MIN_BALANCE_TO_BUY REF_PERCENT)
-  local labels=("Bot token" "Admin IDs" "Support username" "Card number" "Card owner" "Minimum top-up" "Minimum balance to buy" "Referral percent")
+  local keys=(BOT_TOKEN ADMIN_IDS SUPPORT_USERNAME CARD_NUMBER CARD_OWNER MIN_TOPUP MIN_BALANCE_TO_BUY REF_PERCENT VIRT_URL VIRT_API_KEY VIRT_API_PASS VIRT_INSECURE_TLS VIRT_OWNER_EMAIL VPS_DOMAIN)
+  local labels=("Bot token" "Admin IDs" "Support username" "Card number" "Card owner" "Minimum top-up" "Minimum balance to buy" "Referral percent" "Virtualizor URL" "Virtualizor API key" "Virtualizor API pass" "Self-signed SSL (1/0)" "Panel owner e-mail" "VPS hostname domain")
   while true; do
     banner; section "Bot settings"
     local i v
     for i in "${!keys[@]}"; do
       v="$(env_get "${keys[$i]}")"
       [[ "${keys[$i]}" == BOT_TOKEN ]] && v="${v%%:*}:••••••••"
+      [[ "${keys[$i]}" == VIRT_API_* && -n "$v" ]] && v="${v:0:4}••••••••"
       printf "   ${CYN}%d${R}  %-24s ${D}%s${R}\n" "$((i + 1))" "${labels[$i]}" "$v"
     done
-    printf "   ${CYN}9${R}  Edit .env.local in nano\n"
+    printf "   ${CYN}e${R}  Edit .env.local in nano\n"
+    printf "   ${CYN}v${R}  Test Virtualizor connection / list node & OS IDs\n"
     printf "   ${CYN}s${R}  Retry SSL certificate\n"
     printf "   ${CYN}0${R}  Back\n\n"
     printf "  ${B}Select${R} ▸ "; read -r c </dev/tty || return
     case "$c" in
-      [1-8])
+      0|"") return ;;
+      [0-9]|1[0-9]|2[0-9])
+        (( c >= 1 && c <= ${#keys[@]} )) || continue
         local k="${keys[$((c - 1))]}" nv
         prompt nv "New value for ${labels[$((c - 1))]}" "" '.+' "Cannot be empty."
         env_set "$k" "$nv"
         systemctl restart "$SERVICE" && ok "Saved and restarted."
         [[ "$k" == BOT_TOKEN ]] && do_webhook
         pause ;;
-      9) command -v nano >/dev/null || apt-get install -y nano >/dev/null 2>&1
+      e|E) command -v nano >/dev/null || apt-get install -y nano >/dev/null 2>&1
          nano "$ENV_FILE"; systemctl restart "$SERVICE" && ok "Restarted."; pause ;;
+      v|V) do_virt; pause ;;
       s|S) DOMAIN="${DOMAIN}"; SSL_EMAIL=""; run_step "Issuing SSL certificate" step_ssl && do_webhook; pause ;;
-      0|"") return ;;
     esac
   done
 }
@@ -713,6 +754,7 @@ Usage: vpsbot [command]
   status         show service & webhook status
   logs           follow live logs
   webhook        re-register the Telegram webhook
+  virt           test the Virtualizor connection and list node/OS IDs
   backup         dump the database to ${BACKUP_DIR}
   uninstall      remove the bot
 EOF
@@ -733,6 +775,7 @@ case "${1:-menu}" in
   status)         show_status ;;
   logs)           show_logs ;;
   webhook)        do_webhook ;;
+  virt)           do_virt ;;
   backup)         do_backup ;;
   uninstall)      do_uninstall ;;
   -h|--help|help) usage ;;

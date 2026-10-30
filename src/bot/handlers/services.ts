@@ -1,13 +1,15 @@
 import { InlineKeyboard } from "grammy";
 import type { Bot } from "grammy";
 import type { BotContext } from "../context";
-import { OS_LIST } from "@/lib/config";
 import { query, queryOne } from "@/lib/db";
-import { deleteServer, powerAction, rebuildServer } from "@/lib/provider";
+import { deleteServer, powerAction, rebuildServer, refreshIp } from "@/lib/provider";
 import type { PowerAction } from "@/lib/provider";
 import type { ServiceRow } from "@/lib/types";
 import { alert, esc, fmt, show, uid } from "../helpers";
 import { backKb } from "../keyboards";
+
+const errText = (e: unknown) =>
+  e instanceof Error ? e.message.slice(0, 160) : "نامشخص";
 
 const SELECT = `
   SELECT s.*, p.name AS plan_name, p.cpu, p.ram_gb, p.disk_gb
@@ -46,7 +48,12 @@ function serviceText(s: ServiceRow) {
 }
 
 async function showService(ctx: BotContext, id: number, toast?: string) {
-  const s = await getOwnActive(uid(ctx), id);
+  let s = await getOwnActive(uid(ctx), id);
+  if (s && !s.ip) {
+    // IP هنوز ثبت نشده؛ از پنل بگیر (بدون خطا)
+    await refreshIp(id).catch(() => null);
+    s = await getOwnActive(uid(ctx), id);
+  }
   if (!s) return alert(ctx, "این سرور فعال نیست یا یافت نشد.");
   await show(ctx, serviceText(s), serviceKb(id), toast);
 }
@@ -60,10 +67,10 @@ const POWER_TOAST: Record<PowerAction, string> = {
 export function registerServices(bot: Bot<BotContext>) {
   // ── سرویس‌های من ──────────────────────────────────────────
   bot.callbackQuery("services", async (ctx) => {
-    const rows = await query<{ id: number; plan_name: string; power: string; ip: string | null }>(
-      `SELECT s.id, p.name AS plan_name, s.power, s.ip
+    const rows = await query<{ id: number; plan_name: string; power: string; ip: string | null; status: string }>(
+      `SELECT s.id, p.name AS plan_name, s.power, s.ip, s.status
        FROM services s JOIN plans p ON p.id = s.plan_id
-       WHERE s.user_id=$1 AND s.status='active' ORDER BY s.id DESC`,
+       WHERE s.user_id=$1 AND s.status IN ('active','provisioning') ORDER BY s.id DESC`,
       [uid(ctx)],
     );
 
@@ -77,16 +84,19 @@ export function registerServices(bot: Bot<BotContext>) {
     }
 
     // فقط یک سرور فعال: مستقیم مشخصات و دکمه‌های مدیریت
-    if (rows.length === 1) return showService(ctx, rows[0].id);
+    if (rows.length === 1 && rows[0].status === "active") return showService(ctx, rows[0].id);
 
     // چند سرور فعال: لیست
     const kb = new InlineKeyboard();
     for (const r of rows) {
-      kb.text(`${r.power === "on" ? "🟢" : "🔴"} #${r.id} - ${r.plan_name} - ${r.ip ?? ""}`, `svc:${r.id}`).row();
+      if (r.status === "provisioning") kb.text(`⏳ #${r.id} - ${r.plan_name} - در حال ساخت`, `svcwait`).row();
+      else kb.text(`${r.power === "on" ? "🟢" : "🔴"} #${r.id} - ${r.plan_name} - ${r.ip ?? ""}`, `svc:${r.id}`).row();
     }
     kb.text("🔙 منوی اصلی", "home");
     await show(ctx, "📦 <b>سرورهای فعال شما:</b>", kb);
   });
+
+  bot.callbackQuery("svcwait", (ctx) => alert(ctx, "⏳ این سرور در حال ساخت است؛ به‌محض آماده شدن پیام می‌گیرید."));
 
   bot.callbackQuery(/^svc:(\d+)$/, (ctx) => showService(ctx, Number(ctx.match[1])));
 
@@ -105,7 +115,7 @@ export function registerServices(bot: Bot<BotContext>) {
       await powerAction(id, action);
     } catch (e) {
       console.error("power action failed", e);
-      return alert(ctx, "❌ خطا در ارتباط با سرور. چند لحظه بعد دوباره تلاش کنید.");
+      return alert(ctx, `❌ خطا در ارتباط با سرور. چند لحظه بعد دوباره تلاش کنید.\n${errText(e)}`);
     }
     if (action !== "reboot") {
       await query("UPDATE services SET power=$1 WHERE id=$2", [action, id]);
@@ -117,41 +127,50 @@ export function registerServices(bot: Bot<BotContext>) {
   bot.callbackQuery(/^rb:(\d+)$/, async (ctx) => {
     const id = Number(ctx.match[1]);
     if (!(await getOwnActive(uid(ctx), id))) return alert(ctx, "این سرور فعال نیست یا یافت نشد.");
+    const oses = await query<{ key: string; name: string }>("SELECT key, name FROM os_templates WHERE active ORDER BY name");
+    if (oses.length === 0) return alert(ctx, "سیستم‌عاملی تعریف نشده است.");
     const kb = new InlineKeyboard();
-    for (const [key, title] of Object.entries(OS_LIST)) kb.text(`🐧 ${title}`, `rbo:${id}:${key}`).row();
+    for (const o of oses) kb.text(`🐧 ${o.name}`, `rbo:${id}:${o.key}`).row();
     kb.text("❌ انصراف", `svc:${id}`);
     await show(ctx, `🛠 <b>ریبیلد سرور #${id}</b>\n\nسیستم‌عامل جدید را انتخاب کنید:`, kb);
   });
 
   bot.callbackQuery(/^rbo:(\d+):(\w+)$/, async (ctx) => {
-    const [, id, os] = ctx.match;
-    if (!OS_LIST[os]) return alert(ctx, "سیستم‌عامل نامعتبر");
+    const [, id, osKey] = ctx.match;
+    const os = await queryOne<{ name: string }>("SELECT name FROM os_templates WHERE key=$1 AND active", [osKey]);
+    if (!os) return alert(ctx, "سیستم‌عامل نامعتبر");
     if (!(await getOwnActive(uid(ctx), Number(id)))) return alert(ctx, "این سرور فعال نیست یا یافت نشد.");
     const kb = new InlineKeyboard()
-      .text("✅ بله، ریبیلد شود", `rbc:${id}:${os}`)
+      .text("✅ بله، ریبیلد شود", `rbc:${id}:${osKey}`)
       .row()
       .text("❌ انصراف", `svc:${id}`);
     await show(
       ctx,
-      `⚠️ با ریبیلد، <b>تمام اطلاعات سرور #${id} پاک</b> و ${OS_LIST[os]} نصب می‌شود. پسورد جدید ساخته خواهد شد.\n\nادامه می‌دهید؟`,
+      `⚠️ با ریبیلد، <b>تمام اطلاعات سرور #${id} پاک</b> و ${esc(os.name)} نصب می‌شود. پسورد جدید ساخته خواهد شد.\n\nادامه می‌دهید؟`,
       kb,
     );
   });
 
   bot.callbackQuery(/^rbc:(\d+):(\w+)$/, async (ctx) => {
-    const [, idStr, os] = ctx.match;
+    const [, idStr, osKey] = ctx.match;
     const id = Number(idStr);
-    if (!OS_LIST[os]) return alert(ctx, "سیستم‌عامل نامعتبر");
+    const os = await queryOne<{ name: string }>("SELECT name FROM os_templates WHERE key=$1 AND active", [osKey]);
+    if (!os) return alert(ctx, "سیستم‌عامل نامعتبر");
     if (!(await getOwnActive(uid(ctx), id))) return alert(ctx, "این سرور فعال نیست یا یافت نشد.");
 
     try {
-      const { password } = await rebuildServer(id, OS_LIST[os]);
-      await query("UPDATE services SET os=$1, login_pass=$2, power='on' WHERE id=$3", [OS_LIST[os], password, id]);
+      const { password } = await rebuildServer(id, osKey);
+      await query("UPDATE services SET os=$1, os_key=$2, login_pass=$3, power='on' WHERE id=$4", [
+        os.name,
+        osKey,
+        password,
+        id,
+      ]);
     } catch (e) {
       console.error("rebuild failed", e);
-      return alert(ctx, "❌ خطا در ریبیلد. چند لحظه بعد دوباره تلاش کنید.");
+      return alert(ctx, `❌ خطا در ریبیلد. چند لحظه بعد دوباره تلاش کنید.\n${errText(e)}`);
     }
-    await showService(ctx, id, "✅ ریبیلد انجام شد؛ پسورد جدید را ببینید");
+    await showService(ctx, id, "✅ ریبیلد شروع شد؛ نصب چند دقیقه طول می‌کشد. پسورد جدید را ببینید");
   });
 
   // ── حذف ───────────────────────────────────────────────────
@@ -164,13 +183,20 @@ export function registerServices(bot: Bot<BotContext>) {
 
   bot.callbackQuery(/^delc:(\d+)$/, async (ctx) => {
     const id = Number(ctx.match[1]);
+    if (!(await getOwnActive(uid(ctx), id))) return alert(ctx, "این سرور فعال نیست یا یافت نشد.");
+    // اول از روی پنل حذف کن؛ اگر خطا داد سرویس فعال می‌ماند (تا سرور یتیم و بدون صورتحساب نماند)
+    try {
+      await deleteServer(id);
+    } catch (e) {
+      console.error("deleteServer failed", id, e);
+      return alert(ctx, `❌ حذف سرور انجام نشد؛ چند لحظه بعد دوباره تلاش کنید.\n${errText(e)}`);
+    }
     const rows = await query(
       `UPDATE services SET status='deleted', deleted_at=now()
        WHERE id=$1 AND user_id=$2 AND status='active' RETURNING id`,
       [id, uid(ctx)],
     );
     if (rows.length === 0) return alert(ctx, "این سرور فعال نیست یا یافت نشد.");
-    await deleteServer(id).catch((e) => console.error("deleteServer failed", e));
     await show(ctx, "🗑 سرور حذف شد.", backKb([["📦 سرویس‌های من", "services"]]));
   });
 }

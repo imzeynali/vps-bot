@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS services (
     login_user     TEXT,
     login_pass     TEXT,
     power          TEXT NOT NULL DEFAULT 'on',       -- on / off
-    status         TEXT NOT NULL DEFAULT 'active',   -- active / suspended / deleted
+    status         TEXT NOT NULL DEFAULT 'active',   -- provisioning / active / suspended / failed / deleted
     hourly_price   BIGINT NOT NULL,
     last_billed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -74,6 +74,26 @@ ALTER TABLE payments ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;
 UPDATE payments SET approved_at = created_at WHERE status = 'approved' AND approved_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_payments_approved ON payments(status, approved_at);
 CREATE INDEX IF NOT EXISTS idx_users_created ON users(created_at);
+
+-- اتصال به Virtualizor
+CREATE TABLE IF NOT EXISTS locations (
+    key    TEXT PRIMARY KEY,                 -- مثلاً iran (فقط حروف/عدد/_)
+    title  TEXT NOT NULL,                    -- عنوان نمایشی
+    serid  INT  NOT NULL DEFAULT 0,          -- شناسه Server/Node در Virtualizor (0 = master)
+    active BOOLEAN NOT NULL DEFAULT TRUE
+);
+CREATE TABLE IF NOT EXISTS os_templates (
+    key    TEXT PRIMARY KEY,                 -- مثلاً u22
+    name   TEXT NOT NULL,                    -- نام نمایشی، مثلاً Ubuntu 22.04
+    osid   INT  NOT NULL,                    -- شناسه OS Template در Virtualizor
+    active BOOLEAN NOT NULL DEFAULT TRUE
+);
+ALTER TABLE plans    ADD COLUMN IF NOT EXISTS virt_plid INT;            -- (اختیاری) شناسه Plan در Virtualizor
+ALTER TABLE services ADD COLUMN IF NOT EXISTS vps_id BIGINT;            -- شناسه VPS در Virtualizor
+ALTER TABLE services ADD COLUMN IF NOT EXISTS location_key TEXT;
+ALTER TABLE services ADD COLUMN IF NOT EXISTS os_key TEXT;
+ALTER TABLE services ADD COLUMN IF NOT EXISTS provision_error TEXT;
+CREATE INDEX IF NOT EXISTS idx_services_vps ON services(vps_id);
 
 INSERT INTO plans (name, cpu, ram_gb, disk_gb, hourly_price)
 SELECT * FROM (VALUES
