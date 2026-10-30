@@ -2,11 +2,11 @@ import { InlineKeyboard } from "grammy";
 import type { Bot } from "grammy";
 import type { BotContext } from "../context";
 import { config } from "@/lib/config";
-import { query, queryOne, withTx } from "@/lib/db";
-import { genPassword } from "@/lib/provider";
+import { query, queryOne } from "@/lib/db";
+import { dayCost, purchaseService } from "@/lib/purchase";
 import { startProvisioning } from "@/lib/provisioning";
 import type { Plan } from "@/lib/types";
-import { alert, esc, fmt, show, specText, uid } from "../helpers";
+import { alert, esc, fmt, planButton, show, specText, uid } from "../helpers";
 import { backKb } from "../keyboards";
 
 interface Loc {
@@ -68,15 +68,20 @@ export function registerBuy(bot: Bot<BotContext>) {
     if (plans.length === 0) return alert(ctx, "هنوز پلنی برای فروش فعال نشده است.");
     const kb = new InlineKeyboard();
     for (const p of plans) {
-      kb.text(
-        `${p.name} | ${specText(p)} | ${fmt(p.hourly_price)} ت/ساعت`,
-        `plan:${p.id}:${lk}:${ok}`,
-      ).row();
+      kb.text(planButton(p), `plan:${p.id}:${lk}:${ok}`).row();
     }
     kb.text("⬅️ بازگشت", `loc:${lk}`);
-    await show(ctx, `${esc(loc.title)} | ${esc(os.name)}\n\n🛒 <b>پلن را انتخاب کنید:</b>`, kb);
+    const list = plans
+      .map(
+        (p) =>
+          `🔻${esc(p.name)}\n⏰hourly : ${p.hourly_price} toman` +
+          (p.monthly_price ? `\n🗓 monthly: ${fmt(p.monthly_price)} toman` : ""),
+      )
+      .join("\n\n\n");
+    await show(ctx, `${esc(loc.title)} | ${esc(os.name)}\n\n🛒 <b>پلن را انتخاب کنید:</b>\n\n${list}`, kb);
   });
 
+  // ── اطلاعات کامل پلن + انتخاب نوع پرداخت (ساعتی / ماهانه) ──
   bot.callbackQuery(/^plan:(\d+):(\w+):(\w+)$/, async (ctx) => {
     const [, pid, lk, ok] = ctx.match;
     const [p, loc, os] = await Promise.all([
@@ -85,58 +90,49 @@ export function registerBuy(bot: Bot<BotContext>) {
       getOs(ok),
     ]);
     if (!p || !loc || !os) return alert(ctx, "پلن یافت نشد");
-    const text =
-      `🖥 <b>${esc(p.name)}</b>\n` +
-      `مشخصات: ${specText(p)}\n` +
-      `لوکیشن: ${esc(loc.title)}\nسیستم‌عامل: ${esc(os.name)}\n` +
-      `قیمت: <b>${fmt(p.hourly_price)}</b> تومان در ساعت\n\nپرداخت ساعتی از موجودی حساب کسر می‌شود.`;
-    await show(
-      ctx,
-      text,
-      backKb([
-        ["✅ تأیید و ساخت سرویس", `buyc:${pid}:${lk}:${ok}`],
-        ["⬅️ بازگشت به پلن‌ها", `os:${lk}:${ok}`],
-      ]),
-    );
+    let text =
+      `🖥 <b>${esc(p.name)}</b>\n\n` +
+      `⚙️ مشخصات: ${specText(p)}\n` +
+      `🌍 لوکیشن: ${esc(loc.title)}\n` +
+      `💿 سیستم‌عامل: ${esc(os.name)}\n\n` +
+      `⏰ ساعتی: <b>${p.hourly_price}</b> تومان در ساعت\n` +
+      (p.monthly_price ? `🗓 ماهانه: <b>${fmt(p.monthly_price)}</b> تومان\n` : "") +
+      `\n<b>نوع پرداخت را انتخاب کنید:</b>\n` +
+      `• ساعتی: هزینه‌ی یک ساعت همین حالا کسر می‌شود و هر ساعت از موجودی حساب کم می‌شود.\n`;
+    const kb = new InlineKeyboard().text(`⏰ ساعتی (${p.hourly_price} تومان)`, `buyc:h:${pid}:${lk}:${ok}`);
+    if (p.monthly_price) {
+      const day = dayCost(p.monthly_price);
+      text +=
+        `• ماهانه: برای تست، هزینه‌ی <b>یک روز</b> (${fmt(day)} تومان) کسر می‌شود. اگر تا ۲۴ ساعت مشکلی گزارش نشود، ` +
+        `مابقی مبلغ ماهانه (${fmt(p.monthly_price - day)} تومان) کسر شده و سپس هر ۳۰ روز تمدید می‌شود.\n`;
+      kb.text(`🗓 ماهانه (${fmt(p.monthly_price)} تومان)`, `buyc:m:${pid}:${lk}:${ok}`);
+    }
+    kb.row().text("⬅️ بازگشت به پلن‌ها", `os:${lk}:${ok}`);
+    await show(ctx, text, kb);
   });
 
-  bot.callbackQuery(/^buyc:(\d+):(\w+):(\w+)$/, async (ctx) => {
-    const [, pid, lk, ok] = ctx.match;
-    const userId = uid(ctx);
+  bot.callbackQuery(/^buyc:([hm]):(\d+):(\w+):(\w+)$/, async (ctx) => {
+    const [, m, pid, lk, ok] = ctx.match;
+    const mode = m === "m" ? "monthly" : "hourly";
 
     // ۱) کسر هزینه + ثبت سرویس (provisioning) در یک تراکنش سریع؛ ساخت روی پنل بعد از commit
-    const result = await withTx(async (c) => {
-      const p = (await c.query<Plan>("SELECT * FROM plans WHERE id=$1 AND active", [Number(pid)])).rows[0];
-      const loc = (await c.query<Loc>("SELECT key, title FROM locations WHERE key=$1 AND active", [lk])).rows[0];
-      const os = (await c.query<Os>("SELECT key, name FROM os_templates WHERE key=$1 AND active", [ok])).rows[0];
-      const u = (await c.query<{ balance: number }>("SELECT balance FROM users WHERE id=$1 FOR UPDATE", [userId]))
-        .rows[0];
-      if (!p || !loc || !os || !u) return { error: "❌ خطا در ثبت سفارش" };
-      if (u.balance < Math.max(config.minBalanceToBuy, p.hourly_price)) {
-        return { error: `❌ موجودی شما کم است. حداقل موجودی برای ساخت سرویس ${fmt(config.minBalanceToBuy)} تومان است.` };
-      }
-      await c.query("UPDATE users SET balance = balance - $1 WHERE id=$2", [p.hourly_price, userId]);
-      const sid = (
-        await c.query<{ id: number }>(
-          `INSERT INTO services (user_id, plan_id, hourly_price, location, os, location_key, os_key,
-                                 status, login_user, login_pass, panel_pass)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,'provisioning','root',$8,$9) RETURNING id`,
-          [userId, p.id, p.hourly_price, loc.title, os.name, loc.key, os.key, genPassword(), genPassword()],
-        )
-      ).rows[0].id;
-      return { sid };
-    }).catch((e) => {
-      console.error("buy error", e);
-      return { error: "❌ خطا در ثبت سفارش. مبلغی کسر نشد، دوباره تلاش کنید." };
-    });
-
-    if ("error" in result) return alert(ctx, result.error!);
+    const result = await purchaseService({ userId: uid(ctx), planId: Number(pid), locKey: lk, osKey: ok, mode }).catch(
+      (e) => {
+        console.error("buy error", e);
+        return { error: "❌ خطا در ثبت سفارش. مبلغی کسر نشد، دوباره تلاش کنید." };
+      },
+    );
+    if ("error" in result) return alert(ctx, result.error);
 
     // ۲) ساخت در پس‌زمینه (ممکن است چند ده ثانیه طول بکشد)
-    void startProvisioning(ctx.api, result.sid!);
+    void startProvisioning(ctx.api, result.sid);
     await show(
       ctx,
-      `⏳ <b>سرور #${result.sid} در حال ساخت است…</b>\nمعمولاً کمتر از چند دقیقه طول می‌کشد؛ به‌محض آماده شدن، مشخصات برای شما ارسال می‌شود.`,
+      `⏳ <b>سرور #${result.sid} در حال ساخت است…</b>\n` +
+        (mode === "monthly"
+          ? `🗓 سرویس ماهانه — هزینه‌ی یک روز تست (${fmt(result.charged)} تومان) کسر شد.\n`
+          : `⏰ سرویس ساعتی — ${fmt(result.charged)} تومان کسر شد.\n`) +
+        `معمولاً کمتر از چند دقیقه طول می‌کشد؛ به‌محض آماده شدن، مشخصات برای شما ارسال می‌شود.`,
       backKb([["📦 سرویس‌های من", "services"]]),
     );
   });

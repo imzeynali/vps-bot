@@ -3,10 +3,15 @@ import type { Bot } from "grammy";
 import type { BotContext } from "../context";
 import { query, queryOne } from "@/lib/db";
 import { deleteServer, powerAction, rebuildServer, refreshIp } from "@/lib/provider";
+import { reportProblem } from "@/lib/trial";
 import type { PowerAction } from "@/lib/provider";
 import type { ServiceRow } from "@/lib/types";
 import { alert, esc, fmt, show, specText, uid } from "../helpers";
 import { backKb } from "../keyboards";
+
+const jdate = (d: Date) => new Date(d).toLocaleDateString("fa-IR", { timeZone: "Asia/Tehran" });
+const jtime = (d: Date) =>
+  new Date(d).toLocaleString("fa-IR", { timeZone: "Asia/Tehran", dateStyle: "short", timeStyle: "short" });
 
 const errText = (e: unknown) =>
   e instanceof Error ? e.message.slice(0, 160) : "نامشخص";
@@ -19,8 +24,10 @@ const SELECT = `
 const getOwnActive = (userId: number, id: number) =>
   queryOne<ServiceRow>(`${SELECT} WHERE s.id=$1 AND s.user_id=$2 AND s.status='active'`, [id, userId]);
 
-function serviceKb(id: number) {
-  return new InlineKeyboard()
+function serviceKb(id: number, s?: ServiceRow) {
+  const kb = new InlineKeyboard();
+  if (s && s.billing_mode === "monthly" && s.trial && !s.trial_issue) kb.text("⚠️ گزارش مشکل (دوره تست)", `svcprob:${id}`).row();
+  return kb
     .text("▶️ روشن", `pw:${id}:on`)
     .text("⏹ خاموش", `pw:${id}:off`)
     .row()
@@ -33,6 +40,19 @@ function serviceKb(id: number) {
     .text("🔙 منوی اصلی", "home");
 }
 
+function monthlyText(s: ServiceRow) {
+  const price = s.monthly_price ?? 0;
+  let t = `🗓 سرویس ماهانه: ${fmt(price)} تومان`;
+  if (s.trial && s.trial_issue) {
+    t += `\n⚠️ گزارش مشکل شما ثبت شده و در حال بررسی است؛ تا آن زمان مبلغ دیگری کسر نمی‌شود.`;
+  } else if (s.trial && s.period_end) {
+    t += `\n🧪 دوره تست تا ${jtime(s.period_end)}\nپس از آن مابقی مبلغ (${fmt(Math.max(price - s.initial_charge, 0))} تومان) کسر می‌شود.`;
+  } else if (s.period_end) {
+    t += `\n🔁 تمدید بعدی: ${jdate(s.period_end)}`;
+  }
+  return t;
+}
+
 function serviceText(s: ServiceRow) {
   return (
     `🖥 <b>سرور #${s.id}</b> — ${esc(s.plan_name)}\n` +
@@ -43,7 +63,7 @@ function serviceText(s: ServiceRow) {
     `🌐 IP: <code>${esc(s.ip)}</code>\n` +
     `👤 یوزر: <code>${esc(s.login_user)}</code>\n` +
     `🔑 پسورد: <code>${esc(s.login_pass)}</code>\n\n` +
-    `💵 هزینه: ${fmt(s.hourly_price)} تومان در ساعت`
+    (s.billing_mode === "monthly" ? monthlyText(s) : `💵 هزینه: ${fmt(s.hourly_price)} تومان در ساعت`)
   );
 }
 
@@ -55,7 +75,7 @@ async function showService(ctx: BotContext, id: number, toast?: string) {
     s = await getOwnActive(uid(ctx), id);
   }
   if (!s) return alert(ctx, "این سرور فعال نیست یا یافت نشد.");
-  await show(ctx, serviceText(s), serviceKb(id), toast);
+  await show(ctx, serviceText(s), serviceKb(id, s), toast);
 }
 
 const POWER_TOAST: Record<PowerAction, string> = {
@@ -94,6 +114,15 @@ export function registerServices(bot: Bot<BotContext>) {
     }
     kb.text("🔙 منوی اصلی", "home");
     await show(ctx, "📦 <b>سرورهای فعال شما:</b>", kb);
+  });
+
+  // گزارش مشکل در دوره‌ی تست سرویس ماهانه
+  bot.callbackQuery(/^svcprob:(\d+)$/, async (ctx) => {
+    const id = Number(ctx.match[1]);
+    const r = await reportProblem(ctx.api, uid(ctx), id);
+    if (r === "invalid") return alert(ctx, "دوره‌ی تست این سرویس تمام شده یا گزارش ممکن نیست.");
+    if (r === "already") return alert(ctx, "گزارش شما قبلاً ثبت شده و در حال بررسی است.");
+    await showService(ctx, id, "✅ گزارش ثبت شد؛ پشتیبانی بررسی می‌کند");
   });
 
   bot.callbackQuery("svcwait", (ctx) => alert(ctx, "⏳ این سرور در حال ساخت است؛ به‌محض آماده شدن پیام می‌گیرید."));

@@ -34,7 +34,9 @@ await query("DELETE FROM users WHERE id IN (555, 999)");
 await query("INSERT INTO users (id, username, balance) VALUES (555,'buyer',100000),(999,'adm',0)");
 await query("INSERT INTO locations (key,title,serid) VALUES ('iran','🇮🇷 ایران',1)");
 await query("INSERT INTO os_templates (key,name,osid) VALUES ('u22','Ubuntu 22.04',11),('d12','Debian 12',12)");
-const plan = (await queryOne<{ id: number }>("SELECT id FROM plans ORDER BY id LIMIT 1"))!;
+const plan = (await queryOne<{ id: number }>(
+  "INSERT INTO plans (name,cpu,ram_gb,disk_gb,hourly_price) VALUES ('t-plan',1,1,10,300) RETURNING id",
+))!;
 
 const sent: { to: number; text: string }[] = [];
 const api: any = { sendMessage: async (to: number, text: string) => (sent.push({ to, text }), {}) };
@@ -171,6 +173,129 @@ await P.deleteServer(id);
 assert.ok(!mock.vps.has(s.vps_id) || true);
 await P.deleteServer(id); // دوباره: «does not exist» = قبلاً حذف شده، خطا نباشد
 console.log("✔ delete (+ already-gone tolerated)");
+
+// ── ۹.۵) سرویس ماهانه: ۱ روز تست ← (گزارش مشکل) ← مابقی ← تمدید ← تعلیق ← لغو و بازگشت وجه
+{
+  const { purchaseService, dayCost } = await import("../src/lib/purchase");
+  const T = await import("../src/lib/trial");
+  const forceDue = (sid: number) => query("UPDATE services SET period_end = now() - interval '1 minute' WHERE id=$1", [sid]);
+  await query("UPDATE plans SET monthly_price=770000 WHERE id=$1", [plan.id]);
+  const day = dayCost(770000);
+  assert.equal(day, 25667);
+
+  // خرید ماهانه: فقط هزینه‌ی یک روز کسر می‌شود
+  await query("UPDATE users SET balance = 10000000 WHERE id=555");
+  const r1 = await purchaseService({ userId: 555, planId: plan.id, locKey: "iran", osKey: "u22", mode: "monthly" });
+  assert.ok("sid" in r1);
+  const m1 = r1.sid;
+  assert.equal(await bal(), 10000000 - day);
+  let ms = await svc(m1);
+  assert.equal(ms.billing_mode, "monthly");
+  assert.equal(ms.initial_charge, day);
+  assert.equal(ms.monthly_price, 770000);
+  await PR.startProvisioning(api, m1);
+  ms = await svc(m1);
+  assert.equal(ms.status, "active");
+  assert.equal(ms.trial, true);
+  const hrs = (new Date(ms.period_end).getTime() - Date.now()) / 3.6e6;
+  assert.ok(hrs > 23.9 && hrs <= 24.01, "trial lasts 24h");
+  assert.ok(sent.some((m) => m.to === 555 && m.text.includes("سرویس ماهانه")), "monthly note in credentials");
+  console.log("✔ monthly purchase charges 1 day + 24h trial");
+
+  // قبل از پایان تست چیزی کسر نمی‌شود
+  await runBilling(api);
+  assert.equal(await bal(), 10000000 - day);
+
+  // گزارش مشکل ← کسر متوقف؛ ادمین اطلاع می‌گیرد
+  assert.equal(await T.reportProblem(api, 555, m1), "ok");
+  assert.equal(await T.reportProblem(api, 555, m1), "already");
+  assert.equal(await T.reportProblem(api, 777, m1), "invalid", "other user cannot report");
+  assert.ok(sent.some((m) => m.to === 999 && m.text.includes("گزارش مشکل")), "admin notified");
+  await forceDue(m1);
+  await runBilling(api);
+  assert.equal(await bal(), 10000000 - day, "no charge while issue is open");
+  assert.equal((await svc(m1)).status, "active");
+  console.log("✔ problem report blocks the full charge");
+
+  // ادمین تأیید می‌کند ← مابقی مبلغ کسر می‌شود (کل = قیمت ماهانه)
+  assert.ok(await T.approveTrial(api, m1));
+  await runBilling(api);
+  assert.equal(await bal(), 10000000 - 770000);
+  ms = await svc(m1);
+  assert.equal(ms.trial, false);
+  const days = (new Date(ms.period_end).getTime() - new Date(ms.period_start).getTime()) / 864e5;
+  assert.equal(Math.round(days), 30);
+  console.log("✔ after approval remainder charged (total = monthly price)");
+
+  // تمدید ماهانه
+  await forceDue(m1);
+  const prevEnd = new Date((await svc(m1)).period_end).getTime();
+  await runBilling(api);
+  assert.equal(await bal(), 10000000 - 770000 * 2);
+  assert.ok(new Date((await svc(m1)).period_end).getTime() > prevEnd + 29 * 864e5);
+  console.log("✔ monthly renewal");
+
+  // بدون گزارش مشکل: بعد از ۲۴ ساعت خودکار مابقی کسر می‌شود
+  await query("UPDATE users SET balance = 10000000 WHERE id=555");
+  const r2 = await purchaseService({ userId: 555, planId: plan.id, locKey: "iran", osKey: "u22", mode: "monthly" });
+  assert.ok("sid" in r2);
+  const m2 = r2.sid;
+  await PR.startProvisioning(api, m2);
+  await forceDue(m2);
+  await runBilling(api);
+  assert.equal(await bal(), 10000000 - 770000);
+  assert.equal((await svc(m2)).trial, false);
+  console.log("✔ no issue → full charge after trial");
+
+  // کمبود موجودی در سررسید ← تعلیق + poweroff
+  await query("UPDATE users SET balance = 100 WHERE id=555");
+  await forceDue(m2);
+  await runBilling(api);
+  const sus = await svc(m2);
+  assert.equal(sus.status, "suspended");
+  assert.equal(mock.vps.get(sus.vps_id).lastAction, "poweroff");
+  console.log("✔ monthly insufficient balance → suspended");
+
+  // هشدار قبل از کسر (موجودی کم)
+  await query("UPDATE users SET balance = 10000000 WHERE id=555");
+  const r3 = await purchaseService({ userId: 555, planId: plan.id, locKey: "iran", osKey: "u22", mode: "monthly" });
+  assert.ok("sid" in r3);
+  const m3 = r3.sid;
+  await PR.startProvisioning(api, m3);
+  await query("UPDATE users SET balance = 5000 WHERE id=555");
+  await query("UPDATE services SET period_end = now() + interval '2 hours' WHERE id=$1", [m3]);
+  const nBefore = sent.length;
+  await runBilling(api);
+  assert.ok(sent.slice(nBefore).some((m) => m.to === 555 && m.text.includes("موجودی")), "low-balance warning sent");
+  assert.equal((await svc(m3)).warned, true);
+  const nMid = sent.length;
+  await runBilling(api);
+  assert.equal(sent.length, nMid, "warning only once");
+  console.log("✔ pre-charge warning (once)");
+
+  // ادمین لغو می‌کند ← حذف از پنل + بازگشت هزینه‌ی روز تست
+  await query("UPDATE users SET balance = 1000000 WHERE id=555");
+  const r4 = await purchaseService({ userId: 555, planId: plan.id, locKey: "iran", osKey: "u22", mode: "monthly" });
+  assert.ok("sid" in r4);
+  const m4 = r4.sid;
+  await PR.startProvisioning(api, m4);
+  const vid = (await svc(m4)).vps_id;
+  assert.equal(await bal(), 1000000 - day);
+  const cx = await T.cancelTrial(api, m4);
+  assert.ok(cx.ok, cx.msg);
+  assert.equal(await bal(), 1000000);
+  assert.equal((await svc(m4)).status, "deleted");
+  assert.ok(!mock.vps.has(vid), "VPS deleted on panel");
+  assert.equal((await T.cancelTrial(api, m4)).ok, false, "cannot cancel twice / refund twice");
+  assert.equal(await bal(), 1000000);
+  console.log("✔ cancel trial → panel delete + refund once");
+
+  // پلن بدون قیمت ماهانه: خرید ماهانه رد می‌شود
+  await query("UPDATE plans SET monthly_price=NULL WHERE id=$1", [plan.id]);
+  const bad = await purchaseService({ userId: 555, planId: plan.id, locKey: "iran", osKey: "u22", mode: "monthly" });
+  assert.ok("error" in bad);
+  console.log("✔ monthly rejected when plan has no monthly price");
+}
 
 // ── ۱۰) پسورد پنل اشتباه / پنل خاموش
 process.env.VIRT_API_PASS = "x";

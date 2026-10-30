@@ -19,23 +19,41 @@ async function tellAdmins(api: Api, text: string) {
   for (const id of config.admins) await api.sendMessage(id, text, { parse_mode: "HTML" }).catch(() => {});
 }
 
-function credentials(s: { id: number; ip: string | null; login_user: string | null; login_pass: string | null }) {
+interface Cred {
+  id: number;
+  ip: string | null;
+  login_user: string | null;
+  login_pass: string | null;
+  billing_mode?: string;
+  initial_charge?: number;
+  monthly_price?: number | null;
+}
+
+function credentials(s: Cred) {
+  const monthly =
+    s.billing_mode === "monthly"
+      ? `\n\n🗓 <b>سرویس ماهانه</b>\nهزینه‌ی یک روز (${(s.initial_charge ?? 0).toLocaleString("en-US")} تومان) برای تست کسر شد. اگر تا ۲۴ ساعت دیگر مشکلی گزارش نکنید (دکمه «⚠️ گزارش مشکل» در بخش سرویس‌های من)، مابقی مبلغ ماهانه (${((s.monthly_price ?? 0) - (s.initial_charge ?? 0)).toLocaleString("en-US")} تومان) کسر می‌شود.`
+      : "";
   return (
     `✅ <b>سرور #${s.id} ساخته شد</b>\n\n` +
     `🌐 IP: <code>${esc(s.ip ?? "در حال تخصیص")}</code>\n` +
     `👤 یوزر: <code>${esc(s.login_user)}</code>\n` +
     `🔑 پسورد: <code>${esc(s.login_pass)}</code>\n\n` +
-    `ℹ️ نصب سیستم‌عامل ممکن است تا چند دقیقه طول بکشد؛ اگر هنوز وصل نشد کمی صبر کنید.`
+    `ℹ️ نصب سیستم‌عامل ممکن است تا چند دقیقه طول بکشد؛ اگر هنوز وصل نشد کمی صبر کنید.` +
+    monthly
   );
 }
 
 /** سرویس را فعال می‌کند (فقط اگر هنوز provisioning باشد). true = فعال شد */
 async function activate(api: Api, serviceId: number, vpsId: number, ip: string | null): Promise<boolean> {
-  const row = await queryOne<{ id: number; user_id: number; ip: string | null; login_user: string; login_pass: string }>(
+  const row = await queryOne<Cred & { user_id: number; login_user: string; login_pass: string }>(
     `UPDATE services
-        SET status='active', vps_id=$2, ip=$3, power='on', last_billed_at=now(), provision_error=NULL
+        SET status='active', vps_id=$2, ip=$3, power='on', last_billed_at=now(), provision_error=NULL,
+            trial = (billing_mode='monthly'),
+            period_start = CASE WHEN billing_mode='monthly' THEN now() END,
+            period_end   = CASE WHEN billing_mode='monthly' THEN now() + interval '24 hours' END
       WHERE id=$1 AND status='provisioning'
-      RETURNING id, user_id, ip, login_user, login_pass`,
+      RETURNING id, user_id, ip, login_user, login_pass, billing_mode, initial_charge, monthly_price`,
     [serviceId, vpsId, ip],
   );
   if (!row) return false;
@@ -47,21 +65,22 @@ async function activate(api: Api, serviceId: number, vpsId: number, ip: string |
 async function refund(api: Api, serviceId: number, reason: string) {
   const r = await withTx(async (c) => {
     const s = (
-      await c.query<{ user_id: number; hourly_price: number }>(
+      await c.query<{ user_id: number; amount: number }>(
         `UPDATE services SET status='failed', provision_error=$2
-          WHERE id=$1 AND status='provisioning' RETURNING user_id, hourly_price`,
+          WHERE id=$1 AND status='provisioning'
+          RETURNING user_id, COALESCE(NULLIF(initial_charge,0), hourly_price) AS amount`,
         [serviceId, reason.slice(0, 500)],
       )
     ).rows[0];
     if (!s) return null;
-    await c.query("UPDATE users SET balance = balance + $1 WHERE id=$2", [s.hourly_price, s.user_id]);
+    await c.query("UPDATE users SET balance = balance + $1 WHERE id=$2", [s.amount, s.user_id]);
     return s;
   });
   if (!r) return;
   await tell(
     api,
     r.user_id,
-    `❌ ساخت سرور #${serviceId} با خطا روبه‌رو شد و مبلغ <b>${r.hourly_price.toLocaleString("en-US")}</b> تومان به حساب شما برگشت داده شد.\nلطفاً دوباره تلاش کنید یا با پشتیبانی (${esc(config.support)}) تماس بگیرید.`,
+    `❌ ساخت سرور #${serviceId} با خطا روبه‌رو شد و مبلغ <b>${r.amount.toLocaleString("en-US")}</b> تومان به حساب شما برگشت داده شد.\nلطفاً دوباره تلاش کنید یا با پشتیبانی (${esc(config.support)}) تماس بگیرید.`,
     false,
   );
 }

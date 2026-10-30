@@ -15,6 +15,15 @@ export const ramLabel = (p: { ram_gb: number; ram_mb?: number | null }) => {
 export const specText = (p: { cpu: number; ram_gb: number; ram_mb?: number | null; disk_gb: number }) =>
   [p.cpu ? `${p.cpu}C` : "", ramLabel(p) === "?" ? "" : ramLabel(p), p.disk_gb ? `${p.disk_gb}G` : ""].filter(Boolean).join("/");
 
+/** متن دکمه‌ی پلن: irvps1-1CPU-1GB RAM-10GB HARD */
+export const planButton = (p: { name: string; cpu: number; ram_gb: number; ram_mb?: number | null; disk_gb: number }) => {
+  const mb = p.ram_mb ?? p.ram_gb * 1024;
+  const ram = !mb ? "" : mb < 1024 ? `${mb}MB` : `${Math.round((mb / 1024) * 10) / 10}GB`;
+  return [p.name, p.cpu ? `${p.cpu}CPU` : "", ram ? `${ram} RAM` : "", p.disk_gb ? `${p.disk_gb}GB HARD` : ""]
+    .filter(Boolean)
+    .join("-");
+};
+
 export const fmt = (n: number) => n.toLocaleString("en-US");
 
 export const uid = (ctx: BotContext) => ctx.from!.id;

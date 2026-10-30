@@ -89,10 +89,20 @@ CREATE TABLE IF NOT EXISTS os_templates (
     active BOOLEAN NOT NULL DEFAULT TRUE
 );
 ALTER TABLE plans    ADD COLUMN IF NOT EXISTS ram_mb INT;               -- (اختیاری) رم دقیق به مگابایت؛ اگر خالی باشد ram_gb*1024
+ALTER TABLE plans    ADD COLUMN IF NOT EXISTS monthly_price BIGINT;     -- (فقط نمایشی) قیمت ماهانه
 ALTER TABLE plans    ADD COLUMN IF NOT EXISTS virt_plid INT;            -- (اختیاری) شناسه Plan در Virtualizor
 ALTER TABLE services ADD COLUMN IF NOT EXISTS vps_id BIGINT;            -- شناسه VPS در Virtualizor
 ALTER TABLE services ADD COLUMN IF NOT EXISTS panel_email TEXT;         -- کاربر اختصاصی این سرویس در Virtualizor
 ALTER TABLE services ADD COLUMN IF NOT EXISTS panel_pass TEXT;
+-- صورتحساب: hourly = ساعتی ، monthly = ماهانه با ۱ روز تست
+ALTER TABLE services ADD COLUMN IF NOT EXISTS billing_mode TEXT NOT NULL DEFAULT 'hourly';
+ALTER TABLE services ADD COLUMN IF NOT EXISTS monthly_price BIGINT;          -- قیمت ماهانه‌ی زمان خرید
+ALTER TABLE services ADD COLUMN IF NOT EXISTS initial_charge BIGINT NOT NULL DEFAULT 0; -- مبلغ کسرشده هنگام خرید (برای بازگشت وجه)
+ALTER TABLE services ADD COLUMN IF NOT EXISTS trial BOOLEAN NOT NULL DEFAULT FALSE;     -- در دوره‌ی تست ۲۴ ساعته
+ALTER TABLE services ADD COLUMN IF NOT EXISTS trial_issue BOOLEAN NOT NULL DEFAULT FALSE; -- کاربر مشکل گزارش کرده
+ALTER TABLE services ADD COLUMN IF NOT EXISTS period_start TIMESTAMPTZ;
+ALTER TABLE services ADD COLUMN IF NOT EXISTS period_end TIMESTAMPTZ;        -- سررسید کسر بعدی
+ALTER TABLE services ADD COLUMN IF NOT EXISTS warned BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE services ADD COLUMN IF NOT EXISTS location_key TEXT;
 ALTER TABLE services ADD COLUMN IF NOT EXISTS os_key TEXT;
 ALTER TABLE services ADD COLUMN IF NOT EXISTS provision_error TEXT;

@@ -5,6 +5,7 @@ import { config } from "@/lib/config";
 import { query } from "@/lib/db";
 import { discover, isConfigured } from "@/lib/virtualizor";
 import { importPanelPlans } from "@/lib/provider";
+import { approveTrial, cancelTrial } from "@/lib/trial";
 import { alert, esc, fmt, specText, uid } from "../helpers";
 
 const isAdmin = (ctx: BotContext) => config.admins.includes(uid(ctx));
@@ -81,13 +82,14 @@ export function registerAdminVirt(bot: Bot<BotContext>) {
   // لیست پلن‌های ربات
   bot.command("plans", async (ctx) => {
     if (!isAdmin(ctx)) return;
-    const rows = await query<{ id: number; name: string; cpu: number; ram_gb: number; ram_mb: number | null; disk_gb: number; hourly_price: number; active: boolean; virt_plid: number | null }>(
+    const rows = await query<{ id: number; name: string; cpu: number; ram_gb: number; ram_mb: number | null; disk_gb: number; hourly_price: number; monthly_price: number | null; active: boolean; virt_plid: number | null }>(
       "SELECT * FROM plans ORDER BY id",
     );
     if (!rows.length) return void ctx.reply("پلنی وجود ندارد. /importplans را بزنید.");
     const lines = rows.map(
       (p) =>
         `${p.active && p.hourly_price > 0 ? "🟢" : "⚪️"} <b>#${p.id}</b> ${esc(p.name)} — ${esc(specText(p) || "منابع از پنل")} — ${fmt(p.hourly_price)} ت/ساعت` +
+        (p.monthly_price ? ` — ماهانه ${fmt(p.monthly_price)}` : "") +
         (p.virt_plid ? ` — plid ${p.virt_plid}` : ""),
     );
     await ctx.reply(lines.join("\n") + "\n\n🟢 = قابل فروش\n/setprice شناسه قیمت\n/delplan شناسه", { parse_mode: "HTML" });
@@ -111,6 +113,30 @@ export function registerAdminVirt(bot: Bot<BotContext>) {
     }
   });
 
+  // /setplan شناسه|نام|cpu|ram(GB)|disk(GB)|قیمت_ساعتی|قیمت_ماهانه[|plid]
+  bot.command("setplan", async (ctx) => {
+    if (!isAdmin(ctx)) return;
+    const f = ctx.match.split("|").map((x) => x.trim());
+    const [id, name, cpu, ram, disk, hourly, monthly, plid] = f;
+    if (
+      (f.length !== 7 && f.length !== 8) ||
+      !name ||
+      [id, cpu, ram, disk, hourly, monthly].some((x) => !/^\d+$/.test(x ?? "")) ||
+      (plid !== undefined && !/^\d+$/.test(plid))
+    ) {
+      return void ctx.reply(
+        "فرمت: /setplan شناسه|نام|cpu|ram(GB)|disk(GB)|قیمت_ساعتی|قیمت_ماهانه[|plid]\nمثال: /setplan 1|irvps1|1|1|10|1750|770000|1",
+      );
+    }
+    const r = await query(
+      `UPDATE plans SET name=$2, cpu=$3, ram_gb=$4, ram_mb=$4*1024, disk_gb=$5, hourly_price=$6,
+              monthly_price=$7, active=($6 > 0), virt_plid=COALESCE($8, virt_plid)
+        WHERE id=$1 RETURNING id`,
+      [Number(id), name, Number(cpu), Number(ram), Number(disk), Number(hourly), Number(monthly), plid ? Number(plid) : null],
+    );
+    await ctx.reply(r.length ? "✅ پلن به‌روز شد (/plans)." : "پلن پیدا نشد.");
+  });
+
   bot.command("setprice", async (ctx) => {
     if (!isAdmin(ctx)) return;
     const [id, price] = ctx.match.trim().split(/\s+/);
@@ -125,6 +151,28 @@ export function registerAdminVirt(bot: Bot<BotContext>) {
     if (!/^\d+$/.test(id)) return void ctx.reply("فرمت: /delplan شناسه_پلن");
     const r = await query("UPDATE plans SET active=FALSE WHERE id=$1 RETURNING id", [Number(id)]);
     await ctx.reply(r.length ? "✅ پلن غیرفعال شد (برای سرویس‌های فعلی تأثیری ندارد)." : "پلن پیدا نشد.");
+  });
+
+  // ── دوره‌ی تست سرویس ماهانه: تصمیم ادمین بعد از «گزارش مشکل» ──
+  bot.callbackQuery(/^adm:tok:(\d+)$/, async (ctx) => {
+    if (!isAdmin(ctx)) return alert(ctx, "دسترسی ندارید");
+    const ok = await approveTrial(ctx.api, Number(ctx.match[1]));
+    await ctx.answerCallbackQuery({ text: ok ? "✅ ثبت شد؛ مابقی مبلغ به‌زودی کسر می‌شود" : "سرویس تست‌شده پیدا نشد", show_alert: true });
+  });
+  bot.callbackQuery(/^adm:tx:(\d+)$/, async (ctx) => {
+    if (!isAdmin(ctx)) return alert(ctx, "دسترسی ندارید");
+    const r = await cancelTrial(ctx.api, Number(ctx.match[1]));
+    await ctx.answerCallbackQuery({ text: r.msg.slice(0, 200), show_alert: true });
+  });
+  bot.command("trialok", async (ctx) => {
+    if (!isAdmin(ctx)) return;
+    if (!/^\d+$/.test(ctx.match.trim())) return void ctx.reply("فرمت: /trialok شناسه_سرویس");
+    await ctx.reply((await approveTrial(ctx.api, Number(ctx.match.trim()))) ? "✅ ثبت شد." : "سرویس تست‌شده پیدا نشد.");
+  });
+  bot.command("trialcancel", async (ctx) => {
+    if (!isAdmin(ctx)) return;
+    if (!/^\d+$/.test(ctx.match.trim())) return void ctx.reply("فرمت: /trialcancel شناسه_سرویس");
+    await ctx.reply((await cancelTrial(ctx.api, Number(ctx.match.trim()))).msg);
   });
 
   bot.command("catalog", async (ctx) => {

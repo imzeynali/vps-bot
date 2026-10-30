@@ -6,6 +6,7 @@ export interface Plan {
   ram_mb: number | null;
   disk_gb: number;
   hourly_price: number;
+  monthly_price: number | null;
   active: boolean;
   virt_plid: number | null;
 }
@@ -20,8 +21,14 @@ export interface ServiceRow {
   login_user: string | null;
   login_pass: string | null;
   power: "on" | "off";
-  status: "active" | "suspended" | "deleted";
+  status: "provisioning" | "active" | "suspended" | "failed" | "deleted";
   hourly_price: number;
+  billing_mode: "hourly" | "monthly";
+  monthly_price: number | null;
+  initial_charge: number;
+  trial: boolean;
+  trial_issue: boolean;
+  period_end: Date | null;
   created_at: Date;
   plan_name: string;
   cpu: number;
