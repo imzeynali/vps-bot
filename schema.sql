@@ -91,6 +91,8 @@ CREATE TABLE IF NOT EXISTS os_templates (
 ALTER TABLE plans    ADD COLUMN IF NOT EXISTS ram_mb INT;               -- (اختیاری) رم دقیق به مگابایت؛ اگر خالی باشد ram_gb*1024
 ALTER TABLE plans    ADD COLUMN IF NOT EXISTS virt_plid INT;            -- (اختیاری) شناسه Plan در Virtualizor
 ALTER TABLE services ADD COLUMN IF NOT EXISTS vps_id BIGINT;            -- شناسه VPS در Virtualizor
+ALTER TABLE services ADD COLUMN IF NOT EXISTS panel_email TEXT;         -- کاربر اختصاصی این سرویس در Virtualizor
+ALTER TABLE services ADD COLUMN IF NOT EXISTS panel_pass TEXT;
 ALTER TABLE services ADD COLUMN IF NOT EXISTS location_key TEXT;
 ALTER TABLE services ADD COLUMN IF NOT EXISTS os_key TEXT;
 ALTER TABLE services ADD COLUMN IF NOT EXISTS provision_error TEXT;

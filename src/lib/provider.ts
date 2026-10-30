@@ -22,7 +22,20 @@ export function genPassword(len = 16): string {
   }
 }
 
-export const hostnameFor = (serviceId: number) => `s${serviceId}.${config.vpsDomain}`;
+/** شماره‌ی اختصاصی سرویس: userStart + id − 1  (id=1 → 1001) */
+export const seqOf = (serviceId: number) => config.virt.userStart + serviceId - 1;
+
+/** مثلاً tetacloud.s1001.com (بر اساس VPS_HOSTNAME_TEMPLATE) */
+export const hostnameFor = (serviceId: number) =>
+  config.vpsHostnameTemplate
+    .replace(/\{n\}/g, String(seqOf(serviceId)))
+    .replace(/\{id\}/g, String(serviceId))
+    .replace(/\{domain\}/g, config.vpsDomain)
+    .toLowerCase();
+
+/** مثلاً tetaclouduser1001@mizban.com ؛ اگر VIRT_USER_DOMAIN تنظیم نباشد null */
+export const panelEmailFor = (serviceId: number): string | null =>
+  config.virt.userDomain ? `${config.virt.userPrefix}${seqOf(serviceId)}@${config.virt.userDomain}`.toLowerCase() : null;
 
 async function vpsIdOf(serviceId: number): Promise<number> {
   const r = await queryOne<{ vps_id: number | null }>("SELECT vps_id FROM services WHERE id=$1", [serviceId]);
@@ -52,8 +65,9 @@ export async function provisionServer(serviceId: number): Promise<ProvisionResul
     serid: number | null;
     osid: number | null;
     login_pass: string | null;
+    panel_pass: string | null;
   }>(
-    `SELECT p.cpu, p.ram_gb, p.ram_mb, p.disk_gb, p.virt_plid, l.serid, o.osid, s.login_pass
+    `SELECT p.cpu, p.ram_gb, p.ram_mb, p.disk_gb, p.virt_plid, l.serid, o.osid, s.login_pass, s.panel_pass
        FROM services s
        JOIN plans p ON p.id = s.plan_id
        LEFT JOIN locations l ON l.key = s.location_key
@@ -66,6 +80,11 @@ export async function provisionServer(serviceId: number): Promise<ProvisionResul
   if (!s.login_pass) throw new V.VirtError("پسورد سرویس ثبت نشده", "panel");
 
   const hostname = hostnameFor(serviceId);
+  const userEmail = panelEmailFor(serviceId);
+  if (userEmail) {
+    if (!s.panel_pass) throw new V.VirtError("پسورد کاربر پنل برای این سرویس ثبت نشده", "panel");
+    await query("UPDATE services SET panel_email=$1 WHERE id=$2", [userEmail, serviceId]);
+  }
   let vps = await V.findByHostname(hostname);
 
   if (!vps) {
@@ -78,6 +97,8 @@ export async function provisionServer(serviceId: number): Promise<ProvisionResul
       cores: s.cpu || null,
       spaceGb: s.disk_gb || null,
       plid: s.virt_plid,
+      userEmail: userEmail ?? undefined,
+      userPass: userEmail ? (s.panel_pass ?? undefined) : undefined,
     });
     if (r.vpsid) vps = (await V.getVps(r.vpsid)) ?? { vpsid: r.vpsid, hostname, ips: [], raw: {} };
     else vps = await V.findByHostname(hostname);

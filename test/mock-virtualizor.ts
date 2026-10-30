@@ -48,7 +48,7 @@ export async function startMock(): Promise<Mock> {
         case "ippool":
           return send({ ippools: { 3: { ippid: "3", ip_pool_name: "Teh-Pool" } } });
         case "addvs": {
-          if (body.user_email !== "bot@example.com" || !body.rootpass || !body.hostname) return send({ error: { user: "bad params" } });
+          if (!/^tetaclouduser\d+@mizban\.com$/.test(body.user_email ?? "") || !body.user_pass || !body.rootpass || !body.hostname) return send({ error: { user: "bad params" } });
           const id = nextId++;
           vps.set(id, { vpsid: String(id), hostname: body.hostname, serid: body.serid, osid: body.osid, ram: body.ram, cores: body.cores, space: body.space, ips: { 1: `10.0.0.${nextIp++}` }, state: "on" });
           return send({ title: "Add Virtual Server", done: { msg: "VPS created", vpsid: id }, vpsinfo: { vpsid: id } });

@@ -25,7 +25,13 @@ export const config = {
     apiPass: process.env.VIRT_API_PASS ?? "",
     insecureTls: process.env.VIRT_INSECURE_TLS === "1", // برای گواهی self-signed
     type: process.env.VIRT_TYPE ?? "kvm", // kvm / openvz / lxc / xen ...
-    ownerUid: num(process.env.VIRT_OWNER_UID, 0), // کاربر مالک VPSها (اگر از قبل ساخته‌اید)
+    // به‌ازای هر خرید یک کاربر اختصاصی در پنل ساخته می‌شود: <userPrefix><N>@<userDomain>
+    // N = userStart + شناسه سرویس − ۱  (مثلاً tetaclouduser1001@mizban.com)
+    userPrefix: (process.env.VIRT_USER_PREFIX ?? "vpsuser").trim(),
+    userDomain: (process.env.VIRT_USER_DOMAIN ?? "").trim(),
+    userStart: num(process.env.VIRT_USER_START, 1001),
+    // حالت قدیمی (یک کاربر مشترک)؛ فقط اگر VIRT_USER_DOMAIN خالی باشد استفاده می‌شود
+    ownerUid: num(process.env.VIRT_OWNER_UID, 0),
     ownerEmail: process.env.VIRT_OWNER_EMAIL ?? "", // یا ایمیل+پسورد تا خودکار ساخته شود
     ownerPass: process.env.VIRT_OWNER_PASS ?? "",
     ipPoolId: num(process.env.VIRT_IP_POOL_ID, 0), // اختیاری
@@ -34,6 +40,9 @@ export const config = {
   },
   // دامنه‌ی hostname سرورها: s<ID>.<vpsDomain>
   vpsDomain: (process.env.VPS_DOMAIN || hostOf(process.env.APP_URL) || "vps.local").toLowerCase(),
+  // الگوی hostname: {n} شماره (مثلاً 1001) ، {id} شناسه سرویس ، {domain} دامنه بالا
+  // مثال: tetacloud.s{n}.com  →  tetacloud.s1001.com
+  vpsHostnameTemplate: (process.env.VPS_HOSTNAME_TEMPLATE || "s{n}.{domain}").trim(),
 };
 
 function hostOf(u?: string) {

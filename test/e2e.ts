@@ -11,8 +11,10 @@ Object.assign(process.env, {
   VIRT_URL: `http://127.0.0.1:${mock.port}`,
   VIRT_API_KEY: "KEY",
   VIRT_API_PASS: "PASS",
-  VIRT_OWNER_EMAIL: "bot@example.com",
-  VIRT_OWNER_PASS: "OwnerPass123",
+  VIRT_USER_PREFIX: "tetaclouduser",
+  VIRT_USER_DOMAIN: "mizban.com",
+  VIRT_USER_START: "1001",
+  VPS_HOSTNAME_TEMPLATE: "tetacloud.s{n}.com",
   VIRT_TIMEOUT_MS: "1500",
   VPS_DOMAIN: "vps.test",
   ADMIN_IDS: "999",
@@ -27,6 +29,7 @@ const { runBilling } = await import("../src/lib/billing");
 // پاک‌سازی و داده‌ی اولیه
 await query("TRUNCATE services, locations, os_templates RESTART IDENTITY CASCADE");
 await query("DELETE FROM balance_adjustments");
+await query("DELETE FROM plans WHERE virt_plid IS NOT NULL");
 await query("DELETE FROM users WHERE id IN (555, 999)");
 await query("INSERT INTO users (id, username, balance) VALUES (555,'buyer',100000),(999,'adm',0)");
 await query("INSERT INTO locations (key,title,serid) VALUES ('iran','🇮🇷 ایران',1)");
@@ -39,9 +42,9 @@ const api: any = { sendMessage: async (to: number, text: string) => (sent.push({
 async function newService(): Promise<number> {
   await query("UPDATE users SET balance = balance - 300 WHERE id=555"); // شبیه‌سازی کسر هزینه خرید
   const r = await queryOne<{ id: number }>(
-    `INSERT INTO services (user_id, plan_id, hourly_price, location, os, location_key, os_key, status, login_user, login_pass)
-     VALUES (555,$1,300,'🇮🇷 ایران','Ubuntu 22.04','iran','u22','provisioning','root',$2) RETURNING id`,
-    [plan.id, P.genPassword()],
+    `INSERT INTO services (user_id, plan_id, hourly_price, location, os, location_key, os_key, status, login_user, login_pass, panel_pass)
+     VALUES (555,$1,300,'🇮🇷 ایران','Ubuntu 22.04','iran','u22','provisioning','root',$2,$3) RETURNING id`,
+    [plan.id, P.genPassword(), P.genPassword()],
   );
   return r!.id;
 }
@@ -77,12 +80,15 @@ assert.equal(s.status, "active");
 assert.ok(s.vps_id);
 assert.match(s.ip, /^10\.0\.0\.\d+$/);
 const created = mock.calls.find((c) => c.act === "addvs")!;
-assert.equal(created.body.hostname, `s${id}.vps.test`);
+assert.equal(created.body.hostname, "tetacloud.s1001.com");
+assert.equal(created.body.user_email, "tetaclouduser1001@mizban.com");
+assert.equal(created.body.user_pass, s.panel_pass);
+assert.equal(s.panel_email, "tetaclouduser1001@mizban.com");
+assert.notEqual(created.body.user_pass, created.body.rootpass);
 assert.equal(created.body.serid, "1");
 assert.equal(created.body.osid, "11");
 assert.equal(created.body.ram, String(1 * 1024));
 assert.equal(created.body.rootpass, s.login_pass);
-assert.equal(created.body.user_email, "bot@example.com");
 assert.ok(created.body.vncpass.length <= 6, "vnc password must be <= 6 chars");
 assert.ok(sent.some((m) => m.to === 555 && m.text.includes(s.login_pass)));
 console.log("✔ provision success + credentials sent");
@@ -132,7 +138,7 @@ console.log("✔ timeout → recoverStuck refunds when VPS absent");
 // ── ۶) timeout ولی VPS در پنل ساخته شده → adopt
 const id4 = await newService();
 await query("UPDATE services SET created_at = now() - interval '20 minutes' WHERE id=$1", [id4]);
-mock.vps.set(777, { vpsid: "777", hostname: `s${id4}.vps.test`, ips: { 1: "10.9.9.9" } });
+mock.vps.set(777, { vpsid: "777", hostname: P.hostnameFor(id4), ips: { 1: "10.9.9.9" } });
 const b4 = await bal();
 await PR.recoverStuck(api);
 s = await svc(id4);

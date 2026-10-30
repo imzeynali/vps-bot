@@ -188,6 +188,9 @@ export interface CreateVpsInput {
   cores?: number | null;
   spaceGb?: number | null;
   plid?: number | null;
+  /** کاربر اختصاصی پنل (ساخته می‌شود اگر وجود نداشته باشد). اگر خالی باشد از VIRT_OWNER_* استفاده می‌شود */
+  userEmail?: string;
+  userPass?: string;
 }
 
 /** ساخت VPS. شناسه VPS برگردانده می‌شود (یا null اگر پنل برنگرداند → از hostname پیدا کنید). */
@@ -210,7 +213,10 @@ export async function createVps(p: CreateVpsInput): Promise<{ vpsid: number | nu
   if (p.spaceGb) post.space = c.storageUuid ? [{ size: p.spaceGb, st_uuid: c.storageUuid }] : p.spaceGb;
   if (p.plid) post.plid = p.plid;
   if (c.ipPoolId) post.ippid = c.ipPoolId;
-  if (c.ownerUid) post.uid = c.ownerUid;
+  if (p.userEmail && p.userPass) {
+    post.user_email = p.userEmail;
+    post.user_pass = p.userPass;
+  } else if (c.ownerUid) post.uid = c.ownerUid;
   else {
     if (!c.ownerEmail || !c.ownerPass) {
       throw new VirtError("VIRT_OWNER_UID یا (VIRT_OWNER_EMAIL و VIRT_OWNER_PASS) تنظیم نشده", "panel");

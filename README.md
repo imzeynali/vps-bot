@@ -85,3 +85,14 @@ Next.js حلقه پس‌زمینه ندارد؛ باید هر دقیقه این 
 - حذف سرور ابتدا روی پنل انجام می‌شود؛ اگر خطا بدهد سرویس فعال می‌ماند (سرور یتیم نمی‌ماند).
 - «خاموش» = `poweroff` (فوری).
 - تست خودکار با پنل شبیه‌ساز: `npm run test:virt` (نیاز به `DATABASE_URL`).
+
+### 👤 کاربر و hostname اختصاصی برای هر خرید
+به‌ازای هر خرید یک کاربر جدید در Virtualizor ساخته و سرور با hostname اختصاصی روی همان کاربر ایجاد می‌شود:
+
+| متغیر | مثال | نتیجه |
+|---|---|---|
+| `VIRT_USER_PREFIX` / `VIRT_USER_DOMAIN` | `tetaclouduser` / `mizban.com` | `tetaclouduser1001@mizban.com` |
+| `VIRT_USER_START` | `1001` | شماره‌ی اولین سرویس (N = START + شناسه سرویس − ۱) |
+| `VPS_HOSTNAME_TEMPLATE` | `tetacloud.s{n}.com` | `tetacloud.s1001.com` |
+
+اگر `VIRT_USER_DOMAIN` خالی باشد، حالت قدیمی (یک کاربر مشترک با `VIRT_OWNER_*`) استفاده می‌شود.

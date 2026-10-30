@@ -119,9 +119,9 @@ export function registerBuy(bot: Bot<BotContext>) {
       const sid = (
         await c.query<{ id: number }>(
           `INSERT INTO services (user_id, plan_id, hourly_price, location, os, location_key, os_key,
-                                 status, login_user, login_pass)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,'provisioning','root',$8) RETURNING id`,
-          [userId, p.id, p.hourly_price, loc.title, os.name, loc.key, os.key, genPassword()],
+                                 status, login_user, login_pass, panel_pass)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,'provisioning','root',$8,$9) RETURNING id`,
+          [userId, p.id, p.hourly_price, loc.title, os.name, loc.key, os.key, genPassword(), genPassword()],
         )
       ).rows[0].id;
       return { sid };

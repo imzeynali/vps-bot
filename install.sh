@@ -273,8 +273,10 @@ VIRT_API_KEY="${VIRT_API_KEY}"
 VIRT_API_PASS="${VIRT_API_PASS}"
 VIRT_INSECURE_TLS="${VIRT_INSECURE}"
 VIRT_TYPE="kvm"
-VIRT_OWNER_EMAIL="${VIRT_OWNER_EMAIL}"
-VIRT_OWNER_PASS="${VIRT_OWNER_PASS}"
+VIRT_USER_PREFIX="${VIRT_USER_PREFIX}"
+VIRT_USER_DOMAIN="${VIRT_USER_DOMAIN}"
+VIRT_USER_START="1001"
+VPS_HOSTNAME_TEMPLATE="${VPS_HOSTNAME_TEMPLATE}"
 EOF
   chown "$APP_USER":"$APP_USER" "$ENV_FILE"
   chmod 600 "$ENV_FILE"
@@ -475,11 +477,14 @@ do_install() {
   prompt VIRT_URL "Panel URL (e.g. https://panel.example.com:4085)" "" '^(https?://[^ ]+)?$' "Enter a full URL starting with http(s)://"
   VIRT_URL="${VIRT_URL%/}"
   VIRT_API_KEY=""; VIRT_API_PASS=""; VIRT_INSECURE="0"
-  VIRT_OWNER_EMAIL="bot@${DOMAIN}"; VIRT_OWNER_PASS="$(openssl rand -hex 12)"
+  VIRT_USER_PREFIX="vpsuser"; VIRT_USER_DOMAIN=""; VPS_HOSTNAME_TEMPLATE="s{n}.${DOMAIN}"
   if [[ -n "$VIRT_URL" ]]; then
     prompt VIRT_API_KEY  "API key"  "" '^[A-Za-z0-9]{8,}$' "Letters and digits only."
     prompt VIRT_API_PASS "API pass" "" '^[A-Za-z0-9]{8,}$' "Letters and digits only."
-    prompt VIRT_OWNER_EMAIL "E-mail of the panel user that will own the VPSs (auto-created)" "$VIRT_OWNER_EMAIL" '^[^@ ]+@[^@ ]+\.[^@ ]+$' "Enter a valid e-mail."
+    info "Every purchase gets its own panel user:  <prefix><N>@<domain>   (N starts at 1001)"
+    prompt VIRT_USER_PREFIX "Panel user e-mail prefix" "$VIRT_USER_PREFIX" '^[A-Za-z0-9._-]{2,30}$' "Letters, digits, . _ - only."
+    prompt VIRT_USER_DOMAIN "Panel user e-mail domain (e.g. mizban.com)" "" '^([A-Za-z0-9-]+\.)+[A-Za-z]{2,}$' "Enter a valid domain."
+    prompt VPS_HOSTNAME_TEMPLATE "VPS hostname template ({n} = number)" "$VPS_HOSTNAME_TEMPLATE" '^[A-Za-z0-9.{}-]*\{n\}[A-Za-z0-9.{}-]*$' "Must contain {n}, e.g. tetacloud.s{n}.com"
     confirm "Does the panel use a self-signed / invalid SSL certificate?" n && VIRT_INSECURE="1"
   fi
 
@@ -638,8 +643,8 @@ settings_menu() {
   need_root
   is_installed || { err "Not installed."; pause; return; }
   load_meta
-  local keys=(BOT_TOKEN ADMIN_IDS SUPPORT_USERNAME CARD_NUMBER CARD_OWNER MIN_TOPUP MIN_BALANCE_TO_BUY REF_PERCENT VIRT_URL VIRT_API_KEY VIRT_API_PASS VIRT_INSECURE_TLS VIRT_OWNER_EMAIL VPS_DOMAIN)
-  local labels=("Bot token" "Admin IDs" "Support username" "Card number" "Card owner" "Minimum top-up" "Minimum balance to buy" "Referral percent" "Virtualizor URL" "Virtualizor API key" "Virtualizor API pass" "Self-signed SSL (1/0)" "Panel owner e-mail" "VPS hostname domain")
+  local keys=(BOT_TOKEN ADMIN_IDS SUPPORT_USERNAME CARD_NUMBER CARD_OWNER MIN_TOPUP MIN_BALANCE_TO_BUY REF_PERCENT VIRT_URL VIRT_API_KEY VIRT_API_PASS VIRT_INSECURE_TLS VIRT_USER_PREFIX VIRT_USER_DOMAIN VIRT_USER_START VPS_HOSTNAME_TEMPLATE)
+  local labels=("Bot token" "Admin IDs" "Support username" "Card number" "Card owner" "Minimum top-up" "Minimum balance to buy" "Referral percent" "Virtualizor URL" "Virtualizor API key" "Virtualizor API pass" "Self-signed SSL (1/0)" "Panel user e-mail prefix" "Panel user e-mail domain" "First user number" "VPS hostname template")
   while true; do
     banner; section "Bot settings"
     local i v
