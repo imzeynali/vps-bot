@@ -1,5 +1,6 @@
 import http from "node:http";
 import https from "node:https";
+import { randomInt } from "node:crypto";
 import { config } from "./config";
 
 /**
@@ -175,14 +176,17 @@ export async function findByHostname(hostname: string): Promise<VpsInfo | null> 
   return (await listVps({ vpshostname: hostname })).find((v) => v.hostname.toLowerCase() === hostname.toLowerCase()) ?? null;
 }
 
+const VNC_CHARS = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const vncPass = () => Array.from({ length: 6 }, () => VNC_CHARS[randomInt(VNC_CHARS.length)]).join("");
+
 export interface CreateVpsInput {
   hostname: string;
   rootpass: string;
   serid: number;
   osid: number;
-  ramMb: number;
-  cores: number;
-  spaceGb: number;
+  ramMb?: number | null; // اگر خالی/صفر باشد، مقدار از Plan پنل (plid) گرفته می‌شود
+  cores?: number | null;
+  spaceGb?: number | null;
   plid?: number | null;
 }
 
@@ -196,14 +200,14 @@ export async function createVps(p: CreateVpsInput): Promise<{ vpsid: number | nu
     osid: p.osid,
     hostname: p.hostname,
     rootpass: p.rootpass,
-    ram: p.ramMb,
-    cores: p.cores,
     bandwidth: 0, // 0 = نامحدود
     num_ips: 1,
     vnc: 1,
-    vncpass: p.rootpass,
+    vncpass: vncPass(), // VNC کوتاه (۶ کاراکتر) تا زیر سقف پنل باشد
   };
-  post.space = c.storageUuid ? [{ size: p.spaceGb, st_uuid: c.storageUuid }] : p.spaceGb;
+  if (p.ramMb) post.ram = p.ramMb;
+  if (p.cores) post.cores = p.cores;
+  if (p.spaceGb) post.space = c.storageUuid ? [{ size: p.spaceGb, st_uuid: c.storageUuid }] : p.spaceGb;
   if (p.plid) post.plid = p.plid;
   if (c.ipPoolId) post.ippid = c.ipPoolId;
   if (c.ownerUid) post.uid = c.ownerUid;
@@ -256,7 +260,7 @@ export interface Discovery {
   error?: string;
   servers: { id: number; name: string; virt: string }[];
   os: { id: number; name: string; virt: string }[];
-  plans: { id: number; name: string }[];
+  plans: { id: number; name: string; virt: string; ramMb: number | null; cores: number | null; spaceGb: number | null }[];
   pools: { id: number; name: string }[];
 }
 
@@ -278,9 +282,14 @@ export async function discover(): Promise<Discovery> {
   };
   const [sv, os, pl, ip] = await Promise.all([safe("servers"), safe("ostemplates"), safe("plans"), safe("ippool")]);
 
-  d.servers = collect(sv, "serid")
-    .filter((x) => x.server_name !== undefined)
-    .map((x) => ({ id: Number(x.serid), name: String(x.server_name), virt: String(x.virt ?? "") }));
+  const seenSrv = new Set<string>();
+  for (const x of collect(sv, "serid")) {
+    if (x.server_name === undefined) continue;
+    const k = `${x.serid}:${x.virt ?? ""}`;
+    if (seenSrv.has(k)) continue; // یک Node ممکن است چند بار در پاسخ بیاید
+    seenSrv.add(k);
+    d.servers.push({ id: Number(x.serid), name: String(x.server_name), virt: String(x.virt ?? "") });
+  }
 
   const seen = new Set<string>();
   for (const x of collect(os, "osid")) {
@@ -292,9 +301,20 @@ export async function discover(): Promise<Discovery> {
   }
   d.os.sort((a, b) => a.name.localeCompare(b.name));
 
-  d.plans = collect(pl, "plid")
-    .filter((x) => x.plan_name !== undefined)
-    .map((x) => ({ id: Number(x.plid), name: String(x.plan_name) }));
+  const pos = (v: unknown) => (Number(v) > 0 ? Number(v) : null);
+  const seenPl = new Set<number>();
+  for (const x of collect(pl, "plid")) {
+    if (x.plan_name === undefined || seenPl.has(Number(x.plid))) continue;
+    seenPl.add(Number(x.plid));
+    d.plans.push({
+      id: Number(x.plid),
+      name: String(x.plan_name),
+      virt: String(x.virt ?? ""),
+      ramMb: pos(x.ram), // مگابایت
+      cores: pos(x.cores),
+      spaceGb: pos(x.space), // گیگابایت
+    });
+  }
   d.pools = collect(ip, "ippid")
     .filter((x) => x.ip_pool_name !== undefined)
     .map((x) => ({ id: Number(x.ippid), name: String(x.ip_pool_name) }));

@@ -6,7 +6,7 @@ import { query, queryOne, withTx } from "@/lib/db";
 import { genPassword } from "@/lib/provider";
 import { startProvisioning } from "@/lib/provisioning";
 import type { Plan } from "@/lib/types";
-import { alert, esc, fmt, show, uid } from "../helpers";
+import { alert, esc, fmt, show, specText, uid } from "../helpers";
 import { backKb } from "../keyboards";
 
 interface Loc {
@@ -64,11 +64,12 @@ export function registerBuy(bot: Bot<BotContext>) {
       );
     }
 
-    const plans = await query<Plan>("SELECT * FROM plans WHERE active ORDER BY hourly_price");
+    const plans = await query<Plan>("SELECT * FROM plans WHERE active AND hourly_price > 0 ORDER BY hourly_price");
+    if (plans.length === 0) return alert(ctx, "هنوز پلنی برای فروش فعال نشده است.");
     const kb = new InlineKeyboard();
     for (const p of plans) {
       kb.text(
-        `${p.name} | ${p.cpu}C/${p.ram_gb}G/${p.disk_gb}G | ${fmt(p.hourly_price)} ت/ساعت`,
+        `${p.name} | ${specText(p)} | ${fmt(p.hourly_price)} ت/ساعت`,
         `plan:${p.id}:${lk}:${ok}`,
       ).row();
     }
@@ -86,7 +87,7 @@ export function registerBuy(bot: Bot<BotContext>) {
     if (!p || !loc || !os) return alert(ctx, "پلن یافت نشد");
     const text =
       `🖥 <b>${esc(p.name)}</b>\n` +
-      `CPU: ${p.cpu} هسته\nRAM: ${p.ram_gb} گیگ\nدیسک: ${p.disk_gb} گیگ\n` +
+      `مشخصات: ${specText(p)}\n` +
       `لوکیشن: ${esc(loc.title)}\nسیستم‌عامل: ${esc(os.name)}\n` +
       `قیمت: <b>${fmt(p.hourly_price)}</b> تومان در ساعت\n\nپرداخت ساعتی از موجودی حساب کسر می‌شود.`;
     await show(

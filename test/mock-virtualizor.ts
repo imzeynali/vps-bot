@@ -44,7 +44,7 @@ export async function startMock(): Promise<Mock> {
         case "ostemplates":
           return send({ oslist: { kvm: { 1: { osid: "11", name: "ubuntu-22.04-x86_64", type: "kvm" }, 2: { osid: "12", name: "debian-12-x86_64", type: "kvm" } } } });
         case "plans":
-          return send({ plans: { 5: { plid: "5", plan_name: "Basic" } } });
+          return send({ plans: { 5: { plid: "5", plan_name: "Basic", virt: "kvm", ram: "2048", cores: "2", space: "40" }, 6: { plid: "6", plan_name: "OpenVZ-only", virt: "openvz", ram: "512", cores: "1", space: "10" } } });
         case "ippool":
           return send({ ippools: { 3: { ippid: "3", ip_pool_name: "Teh-Pool" } } });
         case "addvs": {

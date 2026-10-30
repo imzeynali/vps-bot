@@ -3,4 +3,3 @@ node_modules
 .env*.local
 .env
 next-env.d.ts
-*.zip

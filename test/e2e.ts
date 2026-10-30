@@ -53,8 +53,21 @@ const d = await V.discover();
 assert.ok(d.ok);
 assert.deepEqual(d.servers.map((s) => s.id).sort(), [0, 1]);
 assert.ok(d.os.some((o) => o.id === 11 && /ubuntu/i.test(o.name)));
-assert.equal(d.plans[0].id, 5);
+assert.equal(d.plans.find((x) => x.id === 5)!.ramMb, 2048);
 console.log("✔ discover");
+
+// ── ۰.۵) import پلن‌ها (فقط kvm) + بدون تکرار
+const imp = await P.importPanelPlans();
+assert.equal(imp.length, 1);
+assert.ok(imp[0].created);
+const ip = (await queryOne<any>("SELECT * FROM plans WHERE virt_plid=5"))!;
+assert.equal(ip.ram_mb, 2048);
+assert.equal(ip.cpu, 2);
+assert.equal(ip.disk_gb, 40);
+assert.equal(ip.active, false);
+assert.equal(ip.hourly_price, 0);
+assert.equal((await P.importPanelPlans())[0].created, false, "no duplicate import");
+console.log("✔ importPanelPlans");
 
 // ── ۱) خرید موفق
 let id = await newService();
@@ -70,6 +83,7 @@ assert.equal(created.body.osid, "11");
 assert.equal(created.body.ram, String(1 * 1024));
 assert.equal(created.body.rootpass, s.login_pass);
 assert.equal(created.body.user_email, "bot@example.com");
+assert.ok(created.body.vncpass.length <= 6, "vnc password must be <= 6 chars");
 assert.ok(sent.some((m) => m.to === 555 && m.text.includes(s.login_pass)));
 console.log("✔ provision success + credentials sent");
 

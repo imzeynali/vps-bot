@@ -46,13 +46,14 @@ export async function provisionServer(serviceId: number): Promise<ProvisionResul
   const s = await queryOne<{
     cpu: number;
     ram_gb: number;
+    ram_mb: number | null;
     disk_gb: number;
     virt_plid: number | null;
     serid: number | null;
     osid: number | null;
     login_pass: string | null;
   }>(
-    `SELECT p.cpu, p.ram_gb, p.disk_gb, p.virt_plid, l.serid, o.osid, s.login_pass
+    `SELECT p.cpu, p.ram_gb, p.ram_mb, p.disk_gb, p.virt_plid, l.serid, o.osid, s.login_pass
        FROM services s
        JOIN plans p ON p.id = s.plan_id
        LEFT JOIN locations l ON l.key = s.location_key
@@ -73,9 +74,9 @@ export async function provisionServer(serviceId: number): Promise<ProvisionResul
       rootpass: s.login_pass,
       serid: s.serid,
       osid: s.osid,
-      ramMb: s.ram_gb * 1024,
-      cores: s.cpu,
-      spaceGb: s.disk_gb,
+      ramMb: s.ram_mb ?? (s.ram_gb ? s.ram_gb * 1024 : null),
+      cores: s.cpu || null,
+      spaceGb: s.disk_gb || null,
       plid: s.virt_plid,
     });
     if (r.vpsid) vps = (await V.getVps(r.vpsid)) ?? { vpsid: r.vpsid, hostname, ips: [], raw: {} };
@@ -131,3 +132,32 @@ export async function refreshIp(serviceId: number): Promise<string | null> {
   return ip;
 }
 
+
+export interface ImportedPlan {
+  id: number;
+  name: string;
+  plid: number;
+  created: boolean;
+}
+
+/** پلن‌های Virtualizor (فقط نوع kvm) را وارد پلن‌های ربات می‌کند. پلن‌های جدید با قیمت ۰ و غیرفعال ساخته می‌شوند تا ادمین قیمت بدهد. */
+export async function importPanelPlans(): Promise<ImportedPlan[]> {
+  const d = await V.discover();
+  if (!d.ok) throw new V.VirtError(d.error ?? "اتصال به پنل برقرار نشد", "network");
+  const out: ImportedPlan[] = [];
+  for (const p of d.plans) {
+    if (p.virt && p.virt !== config.virt.type) continue;
+    const ex = await queryOne<{ id: number; name: string }>("SELECT id, name FROM plans WHERE virt_plid=$1 ORDER BY id LIMIT 1", [p.id]);
+    if (ex) {
+      out.push({ id: ex.id, name: ex.name, plid: p.id, created: false });
+      continue;
+    }
+    const row = await queryOne<{ id: number }>(
+      `INSERT INTO plans (name, cpu, ram_gb, ram_mb, disk_gb, hourly_price, active, virt_plid)
+       VALUES ($1,$2,$3,$4,$5,0,FALSE,$6) RETURNING id`,
+      [p.name, p.cores ?? 0, p.ramMb ? Math.max(1, Math.round(p.ramMb / 1024)) : 0, p.ramMb, p.spaceGb ?? 0, p.id],
+    );
+    out.push({ id: row!.id, name: p.name, plid: p.id, created: true });
+  }
+  return out;
+}

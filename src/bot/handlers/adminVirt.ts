@@ -4,7 +4,8 @@ import type { BotContext } from "../context";
 import { config } from "@/lib/config";
 import { query } from "@/lib/db";
 import { discover, isConfigured } from "@/lib/virtualizor";
-import { alert, esc, uid } from "../helpers";
+import { importPanelPlans } from "@/lib/provider";
+import { alert, esc, fmt, specText, uid } from "../helpers";
 
 const isAdmin = (ctx: BotContext) => config.admins.includes(uid(ctx));
 const KEY = /^\w{1,16}$/;
@@ -36,19 +37,23 @@ async function virtReport(filter = "") {
   if (!d.ok) return `❌ اتصال به پنل برقرار نشد:\n<code>${esc(d.error)}</code>`;
 
   const f = filter.trim().toLowerCase();
-  const os = d.os.filter((o) => !f || o.name.toLowerCase().includes(f));
+  // فقط OSهای نوع مجازی‌سازی انتخاب‌شده (پیش‌فرض kvm)؛ با «/virt all» همه نمایش داده می‌شود
+  const all = f === "all";
+  const os = d.os.filter(
+    (o) => (all || !o.virt || o.virt === config.virt.type) && (!f || all || o.name.toLowerCase().includes(f)),
+  );
   const lines = [
     `✅ <b>اتصال به Virtualizor برقرار است</b>\n<code>${esc(config.virt.url)}</code>`,
     `\n🖥 <b>Server/Node ها</b> (serid)\n` +
       (d.servers.map((s) => `• ${s.id} — ${esc(s.name)} ${s.virt ? `[${esc(s.virt)}]` : ""}`).join("\n") || "— (پیدا نشد؛ معمولاً 0)"),
-    `\n💿 <b>OS Template ها</b> (osid)${f ? ` — فیلتر «${esc(f)}»` : ""}\n` +
+    `\n💿 <b>OS Template ها</b> (osid) — نوع <b>${esc(all ? "همه" : config.virt.type)}</b>${f && !all ? ` — فیلتر «${esc(f)}»` : ""}\n` +
       (os.slice(0, 40).map((o) => `• ${o.id} — ${esc(o.name)} ${o.virt ? `[${esc(o.virt)}]` : ""}`).join("\n") || "— (پیدا نشد)") +
       (os.length > 40 ? `\n… و ${os.length - 40} مورد دیگر؛ فیلتر کنید: /virt ubuntu` : ""),
   ];
-  if (d.plans.length) lines.push(`\n📋 <b>Plan ها</b> (plid)\n` + d.plans.slice(0, 15).map((p) => `• ${p.id} — ${esc(p.name)}`).join("\n"));
+  if (d.plans.length) lines.push(`\n📋 <b>Plan ها</b> (plid)\n` + d.plans.slice(0, 15).map((p) => `• ${p.id} — ${esc(p.name)} (${p.cores ?? "?"}C / ${p.ramMb ?? "?"}MB / ${p.spaceGb ?? "?"}G)`).join("\n"));
   if (d.pools.length) lines.push(`\n🌐 <b>IP Pool ها</b>\n` + d.pools.slice(0, 15).map((p) => `• ${p.id} — ${esc(p.name)}`).join("\n"));
   lines.push(
-    `\n➕ <b>تعریف در ربات</b>\n<code>/addloc iran|🇮🇷 ایران|0</code>\n<code>/addos u22|Ubuntu 22.04|OSID</code>\n/catalog — موارد تعریف‌شده`,
+    `\n➕ <b>تعریف در ربات</b>\n<code>/addloc iran|🇮🇷 ایران|0</code>\n<code>/addos u22|Ubuntu 22.04|OSID</code>\n/catalog — موارد تعریف‌شده\n/importplans — وارد کردن پلن‌های پنل در ربات`,
   );
   let text = lines.join("\n");
   if (text.length > 3900) text = text.slice(0, 3900) + "\n…";
@@ -70,6 +75,56 @@ export function registerAdminVirt(bot: Bot<BotContext>) {
       parse_mode: "HTML",
       reply_markup: new InlineKeyboard().text("🔄 بروزرسانی", "adm:virt").row().text("🔙 پنل مدیریت", "admin"),
     }).catch(() => {});
+  });
+
+
+  // لیست پلن‌های ربات
+  bot.command("plans", async (ctx) => {
+    if (!isAdmin(ctx)) return;
+    const rows = await query<{ id: number; name: string; cpu: number; ram_gb: number; ram_mb: number | null; disk_gb: number; hourly_price: number; active: boolean; virt_plid: number | null }>(
+      "SELECT * FROM plans ORDER BY id",
+    );
+    if (!rows.length) return void ctx.reply("پلنی وجود ندارد. /importplans را بزنید.");
+    const lines = rows.map(
+      (p) =>
+        `${p.active && p.hourly_price > 0 ? "🟢" : "⚪️"} <b>#${p.id}</b> ${esc(p.name)} — ${esc(specText(p) || "منابع از پنل")} — ${fmt(p.hourly_price)} ت/ساعت` +
+        (p.virt_plid ? ` — plid ${p.virt_plid}` : ""),
+    );
+    await ctx.reply(lines.join("\n") + "\n\n🟢 = قابل فروش\n/setprice شناسه قیمت\n/delplan شناسه", { parse_mode: "HTML" });
+  });
+
+  // وارد کردن پلن‌های Virtualizor
+  bot.command("importplans", async (ctx) => {
+    if (!isAdmin(ctx)) return;
+    await ctx.reply("⏳ در حال خواندن پلن‌ها از پنل…");
+    try {
+      const r = await importPanelPlans();
+      if (!r.length) return void ctx.reply("پلنی (از نوع " + config.virt.type + ") در پنل پیدا نشد.");
+      await ctx.reply(
+        `✅ ${r.filter((x) => x.created).length} پلن جدید وارد شد (${r.length} پلن در پنل)\n\n` +
+          r.map((x) => `• #${x.id} ${esc(x.name)} (plid ${x.plid})${x.created ? " — جدید" : ""}`).join("\n") +
+          `\n\nحالا برای هر پلن قیمت ساعتی (تومان) بدهید تا برای فروش فعال شود:\n<code>/setprice 1 300</code>\n/plans — مشاهده پلن‌ها`,
+        { parse_mode: "HTML" },
+      );
+    } catch (e) {
+      await ctx.reply("❌ " + (e instanceof Error ? e.message : "خطا"));
+    }
+  });
+
+  bot.command("setprice", async (ctx) => {
+    if (!isAdmin(ctx)) return;
+    const [id, price] = ctx.match.trim().split(/\s+/);
+    if (!/^\d+$/.test(id ?? "") || !/^\d+$/.test(price ?? "")) return void ctx.reply("فرمت: /setprice شناسه_پلن قیمت_ساعتی\nمثال: /setprice 1 300");
+    const r = await query("UPDATE plans SET hourly_price=$2, active = ($2 > 0) WHERE id=$1 RETURNING id", [Number(id), Number(price)]);
+    await ctx.reply(r.length ? (Number(price) > 0 ? "✅ قیمت ثبت و پلن فعال شد." : "✅ قیمت صفر شد و پلن غیرفعال شد.") : "پلن پیدا نشد.");
+  });
+
+  bot.command("delplan", async (ctx) => {
+    if (!isAdmin(ctx)) return;
+    const id = ctx.match.trim();
+    if (!/^\d+$/.test(id)) return void ctx.reply("فرمت: /delplan شناسه_پلن");
+    const r = await query("UPDATE plans SET active=FALSE WHERE id=$1 RETURNING id", [Number(id)]);
+    await ctx.reply(r.length ? "✅ پلن غیرفعال شد (برای سرویس‌های فعلی تأثیری ندارد)." : "پلن پیدا نشد.");
   });
 
   bot.command("catalog", async (ctx) => {

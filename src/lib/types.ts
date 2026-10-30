@@ -3,9 +3,11 @@ export interface Plan {
   name: string;
   cpu: number;
   ram_gb: number;
+  ram_mb: number | null;
   disk_gb: number;
   hourly_price: number;
   active: boolean;
+  virt_plid: number | null;
 }
 
 export interface ServiceRow {
@@ -24,5 +26,6 @@ export interface ServiceRow {
   plan_name: string;
   cpu: number;
   ram_gb: number;
+  ram_mb: number | null;
   disk_gb: number;
 }

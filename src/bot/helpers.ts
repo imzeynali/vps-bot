@@ -4,6 +4,17 @@ import type { BotContext } from "./context";
 export const esc = (s: string | null | undefined) =>
   (s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
+/** رم به‌صورت خوانا (مگابایت اگر کمتر از ۱ گیگ) */
+export const ramLabel = (p: { ram_gb: number; ram_mb?: number | null }) => {
+  const mb = p.ram_mb ?? p.ram_gb * 1024;
+  if (!mb) return "?";
+  return mb < 1024 ? `${mb}MB` : `${Math.round((mb / 1024) * 10) / 10}G`;
+};
+
+/** مثلاً 2C/4G/50G (بخش‌های نامشخص حذف می‌شوند) */
+export const specText = (p: { cpu: number; ram_gb: number; ram_mb?: number | null; disk_gb: number }) =>
+  [p.cpu ? `${p.cpu}C` : "", ramLabel(p) === "?" ? "" : ramLabel(p), p.disk_gb ? `${p.disk_gb}G` : ""].filter(Boolean).join("/");
+
 export const fmt = (n: number) => n.toLocaleString("en-US");
 
 export const uid = (ctx: BotContext) => ctx.from!.id;

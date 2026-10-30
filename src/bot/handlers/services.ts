@@ -5,14 +5,14 @@ import { query, queryOne } from "@/lib/db";
 import { deleteServer, powerAction, rebuildServer, refreshIp } from "@/lib/provider";
 import type { PowerAction } from "@/lib/provider";
 import type { ServiceRow } from "@/lib/types";
-import { alert, esc, fmt, show, uid } from "../helpers";
+import { alert, esc, fmt, show, specText, uid } from "../helpers";
 import { backKb } from "../keyboards";
 
 const errText = (e: unknown) =>
   e instanceof Error ? e.message.slice(0, 160) : "نامشخص";
 
 const SELECT = `
-  SELECT s.*, p.name AS plan_name, p.cpu, p.ram_gb, p.disk_gb
+  SELECT s.*, p.name AS plan_name, p.cpu, p.ram_gb, p.ram_mb, p.disk_gb
   FROM services s JOIN plans p ON p.id = s.plan_id`;
 
 /** فقط سرورِ «فعال» متعلق به همین کاربر */
@@ -39,7 +39,7 @@ function serviceText(s: ServiceRow) {
     `وضعیت: ${s.power === "on" ? "🟢 روشن" : "🔴 خاموش"}\n\n` +
     `🌍 لوکیشن: ${esc(s.location)}\n` +
     `💿 سیستم‌عامل: ${esc(s.os)}\n` +
-    `⚙️ مشخصات: ${s.cpu}C / ${s.ram_gb}G / ${s.disk_gb}G\n\n` +
+    `⚙️ مشخصات: ${specText(s)}\n\n` +
     `🌐 IP: <code>${esc(s.ip)}</code>\n` +
     `👤 یوزر: <code>${esc(s.login_user)}</code>\n` +
     `🔑 پسورد: <code>${esc(s.login_pass)}</code>\n\n` +
