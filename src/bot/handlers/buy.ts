@@ -8,6 +8,7 @@ import { startProvisioning } from "@/lib/provisioning";
 import type { Plan } from "@/lib/types";
 import { alert, esc, fmt, planButton, show, specText, uid } from "../helpers";
 import { backKb } from "../keyboards";
+import { getSettings } from "@/lib/settings";
 
 interface Loc {
   key: string;
@@ -57,10 +58,11 @@ export function registerBuy(bot: Bot<BotContext>) {
 
     const u = await queryOne<{ balance: number }>("SELECT balance FROM users WHERE id=$1", [uid(ctx)]);
     const balance = u?.balance ?? 0;
-    if (balance < config.minBalanceToBuy) {
+    const minBal = (await getSettings()).minBalanceToBuy;
+    if (balance < minBal) {
       return alert(
         ctx,
-        `❌ موجودی شما کم است.\nحداقل موجودی برای ساخت سرویس ${fmt(config.minBalanceToBuy)} تومان است.\nموجودی فعلی: ${fmt(balance)} تومان`,
+        `❌ موجودی شما کم است.\nحداقل موجودی برای ساخت سرویس ${fmt(minBal)} تومان است.\nموجودی فعلی: ${fmt(balance)} تومان`,
       );
     }
 

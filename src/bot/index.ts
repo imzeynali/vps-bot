@@ -8,6 +8,7 @@ import { registerServices } from "./handlers/services";
 import { registerWallet } from "./handlers/wallet";
 import { registerAdmin } from "./handlers/admin";
 import { registerAdminVirt } from "./handlers/adminVirt";
+import { registerAdminCatalog } from "./handlers/adminCatalog";
 import { registerAdminPanel } from "./handlers/adminPanel";
 
 const g = globalThis as unknown as { __bot?: Bot<BotContext> };
@@ -33,6 +34,7 @@ function createBot(): Bot<BotContext> {
   registerStart(bot);
   registerAdmin(bot);
   registerAdminVirt(bot); // قبل از registerAdminPanel (فالبک adm:*)
+  registerAdminCatalog(bot); // پلن/لوکیشن/OS/تنظیمات از داخل پنل ادمین
   registerAdminPanel(bot); // باید قبل از registerWallet باشد (پیام همگانی)
   registerBuy(bot);
   registerServices(bot);

@@ -75,6 +75,12 @@ UPDATE payments SET approved_at = created_at WHERE status = 'approved' AND appro
 CREATE INDEX IF NOT EXISTS idx_payments_approved ON payments(status, approved_at);
 CREATE INDEX IF NOT EXISTS idx_users_created ON users(created_at);
 
+-- تنظیمات قابل ویرایش از پنل مدیریت (بر env اولویت دارد)
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 -- اتصال به Virtualizor
 CREATE TABLE IF NOT EXISTS locations (
     key    TEXT PRIMARY KEY,                 -- مثلاً iran (فقط حروف/عدد/_)

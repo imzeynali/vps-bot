@@ -3,6 +3,7 @@ import { config } from "./config";
 import { query, queryOne, withTx } from "./db";
 import { hostnameFor, provisionServer } from "./provider";
 import * as V from "./virtualizor";
+import { getSettings } from "./settings";
 
 const esc = (s: unknown) =>
   String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -80,7 +81,7 @@ async function refund(api: Api, serviceId: number, reason: string) {
   await tell(
     api,
     r.user_id,
-    `❌ ساخت سرور #${serviceId} با خطا روبه‌رو شد و مبلغ <b>${r.amount.toLocaleString("en-US")}</b> تومان به حساب شما برگشت داده شد.\nلطفاً دوباره تلاش کنید یا با پشتیبانی (${esc(config.support)}) تماس بگیرید.`,
+    `❌ ساخت سرور #${serviceId} با خطا روبه‌رو شد و مبلغ <b>${r.amount.toLocaleString("en-US")}</b> تومان به حساب شما برگشت داده شد.\nلطفاً دوباره تلاش کنید یا با پشتیبانی (${esc((await getSettings()).support)}) تماس بگیرید.`,
     false,
   );
 }

@@ -24,7 +24,10 @@ const panelKb = () =>
     .text("📢 ارسال پیام همگانی", "adm:bc")
     .text("💰 مدیریت موجودی", "adm:bal")
     .row()
-    .text("🔌 وضعیت و کاتالوگ Virtualizor", "adm:virt")
+    .text("🛍 مدیریت فروش و کاتالوگ", "adm:cat")
+    .row()
+    .text("⚙️ تنظیمات ربات", "adm:set")
+    .text("🔌 وضعیت Virtualizor", "adm:virt")
     .row()
     .text("🔙 منوی اصلی", "home");
 

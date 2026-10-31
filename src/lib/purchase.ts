@@ -1,4 +1,4 @@
-import { config } from "./config";
+import { getSettings } from "./settings";
 import { withTx } from "./db";
 import { genPassword } from "./provider";
 import type { Plan } from "./types";
@@ -37,9 +37,10 @@ export async function purchaseService(i: {
       if (!p.monthly_price || p.monthly_price <= 0) return { error: "❌ خرید ماهانه برای این پلن فعال نیست." };
       charge = dayCost(p.monthly_price);
     }
-    if (u.balance < Math.max(config.minBalanceToBuy, charge)) {
+    const minBal = (await getSettings()).minBalanceToBuy;
+    if (u.balance < Math.max(minBal, charge)) {
       return {
-        error: `❌ موجودی شما کم است. حداقل موجودی برای ساخت سرویس ${n(Math.max(config.minBalanceToBuy, charge))} تومان است.`,
+        error: `❌ موجودی شما کم است. حداقل موجودی برای ساخت سرویس ${n(Math.max(minBal, charge))} تومان است.`,
       };
     }
 

@@ -6,6 +6,7 @@ import { query, queryOne } from "@/lib/db";
 import { getState, setState } from "@/lib/state";
 import { esc, fmt, normalizeDigits, show, uid } from "../helpers";
 import { backKb, mainMenu } from "../keyboards";
+import { getSettings } from "@/lib/settings";
 
 export function registerWallet(bot: Bot<BotContext>) {
   // ── حساب کاربری ───────────────────────────────────────────
@@ -30,13 +31,14 @@ export function registerWallet(bot: Bot<BotContext>) {
 
   // ── پشتیبانی / قوانین ─────────────────────────────────────
   bot.callbackQuery("support", (ctx) =>
-    show(ctx, `🆘 برای ارتباط با پشتیبانی پیام دهید:\n${esc(config.support)}`, backKb()),
+    (async () => show(ctx, `🆘 برای ارتباط با پشتیبانی پیام دهید:\n${esc((await getSettings()).support)}`, backKb()))(),
   );
   bot.callbackQuery("terms", (ctx) => show(ctx, TERMS, backKb()));
 
   // ── درآمدزایی ─────────────────────────────────────────────
   bot.callbackQuery("referral", async (ctx) => {
     const id = uid(ctx);
+    const S = await getSettings();
     const stats = await queryOne<{ cnt: number; earn: number }>(
       `SELECT (SELECT count(*)::int FROM users WHERE referrer_id=$1) AS cnt,
               (SELECT COALESCE(sum(amount),0)::bigint FROM referral_earnings WHERE referrer_id=$1) AS earn`,
@@ -44,7 +46,7 @@ export function registerWallet(bot: Bot<BotContext>) {
     );
     await show(
       ctx,
-      `💰 <b>درآمدزایی</b>\n\nبا دعوت دوستان، <b>${config.refPercent}%</b> از هر شارژ آن‌ها به‌صورت دائمی به کیف پول شما اضافه می‌شود.\n\n` +
+      `💰 <b>درآمدزایی</b>\n\nبا دعوت دوستان، <b>${S.refPercent}%</b> از هر شارژ آن‌ها به‌صورت دائمی به کیف پول شما اضافه می‌شود.\n\n` +
         `🔗 لینک شما:\n<code>https://t.me/${ctx.me.username}?start=ref_${id}</code>\n\n` +
         `👥 زیرمجموعه‌ها: ${stats?.cnt ?? 0}\n💵 درآمد کل: ${fmt(stats?.earn ?? 0)} تومان`,
       backKb(),
@@ -53,10 +55,11 @@ export function registerWallet(bot: Bot<BotContext>) {
 
   // ── شارژ حساب ─────────────────────────────────────────────
   bot.callbackQuery("topup", async (ctx) => {
+    const S = await getSettings();
     await setState(uid(ctx), "topup_amount");
     await show(
       ctx,
-      `💳 مبلغ شارژ را به <b>تومان</b> و به‌صورت عدد بفرستید (حداقل ${fmt(config.minTopup)}):`,
+      `💳 مبلغ شارژ را به <b>تومان</b> و به‌صورت عدد بفرستید (حداقل ${fmt(S.minTopup)}):`,
       backKb(),
     );
   });
@@ -65,15 +68,16 @@ export function registerWallet(bot: Bot<BotContext>) {
     const st = await getState(uid(ctx));
     if (st.state !== "topup_amount") return;
 
+    const S = await getSettings();
     const txt = normalizeDigits(ctx.message.text);
-    if (!/^\d+$/.test(txt) || Number(txt) < config.minTopup) {
-      return void ctx.reply(`❌ یک عدد معتبر (حداقل ${fmt(config.minTopup)}) بفرستید.`);
+    if (!/^\d+$/.test(txt) || Number(txt) < S.minTopup) {
+      return void ctx.reply(`❌ یک عدد معتبر (حداقل ${fmt(S.minTopup)}) بفرستید.`);
     }
     const amount = Number(txt);
     await setState(uid(ctx), "topup_receipt", { amount });
     await ctx.reply(
       `مبلغ <b>${fmt(amount)}</b> تومان را به کارت زیر واریز کنید:\n\n` +
-        `<code>${esc(config.cardNumber)}</code>\nبه نام: ${esc(config.cardOwner)}\n\n` +
+        `<code>${esc(S.cardNumber)}</code>\nبه نام: ${esc(S.cardOwner)}\n\n` +
         `سپس <b>عکس رسید</b> را همین‌جا بفرستید.`,
       { parse_mode: "HTML", reply_markup: backKb() },
     );

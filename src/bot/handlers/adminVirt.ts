@@ -74,7 +74,7 @@ export function registerAdminVirt(bot: Bot<BotContext>) {
     const text = (await virtReport()) + "\n\n" + (await catalogText());
     await ctx.editMessageText(text.slice(0, 4000), {
       parse_mode: "HTML",
-      reply_markup: new InlineKeyboard().text("🔄 بروزرسانی", "adm:virt").row().text("🔙 پنل مدیریت", "admin"),
+      reply_markup: new InlineKeyboard().text("🔄 بروزرسانی", "adm:virt").row().text("⬅️ مدیریت فروش", "adm:cat"),
     }).catch(() => {});
   });
 
@@ -129,8 +129,8 @@ export function registerAdminVirt(bot: Bot<BotContext>) {
       );
     }
     const r = await query(
-      `UPDATE plans SET name=$2, cpu=$3, ram_gb=$4, ram_mb=$4*1024, disk_gb=$5, hourly_price=$6,
-              monthly_price=$7, active=($6 > 0), virt_plid=COALESCE($8, virt_plid)
+      `UPDATE plans SET name=$2, cpu=$3, ram_gb=$4::int, ram_mb=$4::int*1024, disk_gb=$5, hourly_price=$6::bigint,
+              monthly_price=$7, active=($6::bigint > 0), virt_plid=COALESCE($8::int, virt_plid)
         WHERE id=$1 RETURNING id`,
       [Number(id), name, Number(cpu), Number(ram), Number(disk), Number(hourly), Number(monthly), plid ? Number(plid) : null],
     );
@@ -141,7 +141,7 @@ export function registerAdminVirt(bot: Bot<BotContext>) {
     if (!isAdmin(ctx)) return;
     const [id, price] = ctx.match.trim().split(/\s+/);
     if (!/^\d+$/.test(id ?? "") || !/^\d+$/.test(price ?? "")) return void ctx.reply("فرمت: /setprice شناسه_پلن قیمت_ساعتی\nمثال: /setprice 1 300");
-    const r = await query("UPDATE plans SET hourly_price=$2, active = ($2 > 0) WHERE id=$1 RETURNING id", [Number(id), Number(price)]);
+    const r = await query("UPDATE plans SET hourly_price=$2::bigint, active = ($2::bigint > 0) WHERE id=$1 RETURNING id", [Number(id), Number(price)]);
     await ctx.reply(r.length ? (Number(price) > 0 ? "✅ قیمت ثبت و پلن فعال شد." : "✅ قیمت صفر شد و پلن غیرفعال شد.") : "پلن پیدا نشد.");
   });
 

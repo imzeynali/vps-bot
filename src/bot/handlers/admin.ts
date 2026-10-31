@@ -3,6 +3,7 @@ import type { BotContext } from "../context";
 import { config } from "@/lib/config";
 import { query, withTx } from "@/lib/db";
 import { alert, fmt, uid } from "../helpers";
+import { getSettings } from "@/lib/settings";
 
 const isAdmin = (ctx: BotContext) => config.admins.includes(uid(ctx));
 
@@ -61,7 +62,7 @@ export function registerAdmin(bot: Bot<BotContext>) {
 
       let bonus = 0;
       if (ref) {
-        bonus = Math.floor((p.amount * config.refPercent) / 100);
+        bonus = Math.floor((p.amount * (await getSettings()).refPercent) / 100);
         await c.query("UPDATE users SET balance = balance + $1 WHERE id=$2", [bonus, ref]);
         await c.query("INSERT INTO referral_earnings (referrer_id, referred_id, amount) VALUES ($1,$2,$3)", [
           ref,
@@ -95,7 +96,7 @@ export function registerAdmin(bot: Bot<BotContext>) {
     await ctx.editMessageCaption({ caption: `${ctx.callbackQuery.message?.caption ?? ""}\n\n❌ رد شد` });
     await ctx.answerCallbackQuery();
     await ctx.api
-      .sendMessage(rows[0].user_id, `❌ پرداخت #${pid} تأیید نشد. با پشتیبانی تماس بگیرید: ${config.support}`)
+      .sendMessage(rows[0].user_id, `❌ پرداخت #${pid} تأیید نشد. با پشتیبانی تماس بگیرید: ${(await getSettings()).support}`)
       .catch(() => {});
   });
 }
