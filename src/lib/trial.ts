@@ -2,29 +2,28 @@ import type { Api } from "grammy";
 import { config } from "./config";
 import { queryOne, withTx } from "./db";
 import { deleteServer } from "./provider";
+import { report } from "./adminGroup";
 
 const esc = (s: unknown) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const n = (x: number) => x.toLocaleString("en-US");
 
 async function tellAdmins(api: Api, text: string, serviceId?: number) {
+  const extra = serviceId
+    ? {
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: "✅ مشکل رفع شد؛ ادامه تمدید", callback_data: `adm:tok:${serviceId}` },
+              { text: "🗑 لغو و بازگشت وجه", callback_data: `adm:tx:${serviceId}` },
+            ],
+          ],
+        },
+      }
+    : {};
+  // اگر گروه مدیریتی تنظیم باشد ← تاپیک «پیگیری»؛ وگرنه پیام خصوصی به ادمین‌ها
+  if (await report(api, "followup", text, extra)) return;
   for (const id of config.admins) {
-    await api
-      .sendMessage(id, text, {
-        parse_mode: "HTML",
-        ...(serviceId
-          ? {
-              reply_markup: {
-                inline_keyboard: [
-                  [
-                    { text: "✅ مشکل رفع شد؛ ادامه تمدید", callback_data: `adm:tok:${serviceId}` },
-                    { text: "🗑 لغو و بازگشت وجه", callback_data: `adm:tx:${serviceId}` },
-                  ],
-                ],
-              },
-            }
-          : {}),
-      })
-      .catch(() => {});
+    await api.sendMessage(id, text, { parse_mode: "HTML", ...extra }).catch(() => {});
   }
 }
 

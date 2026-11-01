@@ -5,6 +5,7 @@ import { config } from "@/lib/config";
 import { query, queryOne, withTx } from "@/lib/db";
 import { getState, setState } from "@/lib/state";
 import { alert, esc, fmt, normalizeDigits, show, uid } from "../helpers";
+import { codes, payerInfo, report, stamp } from "@/lib/adminGroup";
 
 const PAGE_SIZE = 10;
 const TZ = "Asia/Tehran";
@@ -25,6 +26,8 @@ const panelKb = () =>
     .text("💰 مدیریت موجودی", "adm:bal")
     .row()
     .text("🛍 مدیریت فروش و کاتالوگ", "adm:cat")
+    .row()
+    .text("👥 تنظیم گروه مدیریتی", "adm:grp")
     .row()
     .text("⚙️ تنظیمات ربات", "adm:set")
     .text("🔌 وضعیت Virtualizor", "adm:virt")
@@ -326,6 +329,7 @@ export function registerAdminPanel(bot: Bot<BotContext>) {
     const { target, op, amount } = row.data;
     const delta = op === "add" ? amount : -amount;
 
+    let adjId = 0;
     const newBalance = await withTx(async (c) => {
       const r = await c.query<{ balance: number }>(
         `UPDATE users SET balance = balance + $1
@@ -334,16 +338,25 @@ export function registerAdminPanel(bot: Bot<BotContext>) {
         [delta, target],
       );
       if (r.rows.length === 0) return null;
-      await c.query(
-        "INSERT INTO balance_adjustments (admin_id, user_id, amount, balance_after) VALUES ($1,$2,$3,$4)",
+      const adj = await c.query<{ id: number }>(
+        "INSERT INTO balance_adjustments (admin_id, user_id, amount, balance_after) VALUES ($1,$2,$3,$4) RETURNING id",
         [uid(ctx), target, delta, r.rows[0].balance],
       );
+      adjId = adj.rows[0].id;
       return r.rows[0].balance;
     });
 
     if (newBalance === null) {
       return show(ctx, "❌ انجام نشد؛ موجودی کاربر برای این کاهش کافی نیست یا کاربر وجود ندارد.", toPanelKb());
     }
+
+    void (async () =>
+      report(
+        ctx.api,
+        "finance",
+        `${op === "add" ? "➕ <b>افزایش دستی موجودی (واریز)</b>" : "➖ <b>کاهش دستی موجودی (برداشت)</b>"} — کد <code>${codes.adjust(adjId)}</code>\n🕒 ${stamp()}\n` +
+          `💵 مبلغ: <b>${fmt(amount)}</b> تومان\n${await payerInfo(target)}\n👮 ادمین: <code>${uid(ctx)}</code>`,
+      ))().catch(() => {});
 
     await ctx.api
       .sendMessage(

@@ -1,0 +1,932 @@
+
+--- a/schema.sql	2026-10-30 22:51:12.000000000 +0000
++++ b/schema.sql	2026-11-01 17:38:25.309532212 +0000
+@@ -121,3 +121,10 @@
+     ('طلایی', 4, 8, 100, 1800)
+ ) AS v(name, cpu, ram_gb, disk_gb, hourly_price)
+ WHERE NOT EXISTS (SELECT 1 FROM plans);
++
++-- گزارش‌های کاربران (تاپیک «پیگیری» در گروه مدیریتی)
++CREATE TABLE IF NOT EXISTS user_reports (
++    id         SERIAL PRIMARY KEY,
++    user_id    BIGINT NOT NULL REFERENCES users(id),
++    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
++);
+
+--- a/src/bot/handlers/admin.ts	2026-10-30 22:51:26.000000000 +0000
++++ b/src/bot/handlers/admin.ts	2026-11-01 17:38:48.463749051 +0000
+@@ -4,6 +4,7 @@
+ import { query, withTx } from "@/lib/db";
+ import { alert, fmt, uid } from "../helpers";
+ import { getSettings } from "@/lib/settings";
++import { codes, payerInfo, report, stamp } from "@/lib/adminGroup";
+ 
+ const isAdmin = (ctx: BotContext) => config.admins.includes(uid(ctx));
+ 
+@@ -76,6 +77,15 @@
+     if (!out) return alert(ctx, "قبلاً بررسی شده");
+     await ctx.editMessageCaption({ caption: `${ctx.callbackQuery.message?.caption ?? ""}\n\n✅ تأیید شد` });
+     await ctx.answerCallbackQuery();
++    void (async () =>
++      report(
++        ctx.api,
++        "finance",
++        `✅ <b>واریز تأیید شد</b> — کد <code>${codes.deposit(out.p.id)}</code>\n🕒 ${stamp()}\n` +
++          `💵 مبلغ: <b>${fmt(out.p.amount)}</b> تومان\n${await payerInfo(out.p.user_id)}\n` +
++          `👮 تأییدکننده: <code>${uid(ctx)}</code>` +
++          (out.ref && out.bonus > 0 ? `\n🎁 پورسانت معرف <code>${out.ref}</code>: ${fmt(out.bonus)} تومان` : ""),
++      ))().catch(() => {});
+     await ctx.api.sendMessage(out.p.user_id, `✅ حساب شما به مبلغ ${fmt(out.p.amount)} تومان شارژ شد.`).catch(() => {});
+     if (out.ref && out.bonus > 0) {
+       await ctx.api
+@@ -93,6 +103,12 @@
+       [pid],
+     );
+     if (rows.length === 0) return alert(ctx, "قبلاً بررسی شده");
++    void (async () =>
++      report(
++        ctx.api,
++        "finance",
++        `❌ <b>واریز رد شد</b> — کد <code>${codes.deposit(pid)}</code>\n🕒 ${stamp()}\n${await payerInfo(rows[0].user_id)}\n👮 ردکننده: <code>${uid(ctx)}</code>`,
++      ))().catch(() => {});
+     await ctx.editMessageCaption({ caption: `${ctx.callbackQuery.message?.caption ?? ""}\n\n❌ رد شد` });
+     await ctx.answerCallbackQuery();
+     await ctx.api
+
+--- a/src/bot/handlers/adminGroup.ts	1970-01-01 00:00:00.000000000 +0000
++++ b/src/bot/handlers/adminGroup.ts	2026-11-01 17:38:09.669319258 +0000
+@@ -0,0 +1,116 @@
++import { InlineKeyboard } from "grammy";
++import type { Bot } from "grammy";
++import type { BotContext } from "../context";
++import { config } from "@/lib/config";
++import { setState } from "@/lib/state";
++import { TOPICS, disconnectGroup, getGroup, report, setupGroup, stamp } from "@/lib/adminGroup";
++import type { Topic } from "@/lib/adminGroup";
++import { sendServerReport } from "@/lib/serverReport";
++import { alert, show, uid } from "../helpers";
++
++const isAdmin = (ctx: BotContext) => !!ctx.from && config.admins.includes(ctx.from.id);
++
++async function panelText() {
++  const g = await getGroup();
++  const head = "👥 <b>تنظیم گروه مدیریتی</b>\n\n";
++  if (!g.chatId) {
++    return (
++      head +
++      "هنوز گروهی متصل نشده است.\n\n" +
++      "<b>مراحل:</b>\n" +
++      "1️⃣ یک <b>سوپرگروه</b> بسازید و در تنظیمات آن گزینه‌ی <b>Topics</b> را روشن کنید.\n" +
++      "2️⃣ ربات را به گروه اضافه و <b>ادمین</b> کنید (دسترسی <b>Manage Topics</b> لازم است).\n" +
++      "3️⃣ داخل همان گروه دستور <code>/setgroup</code> را بفرستید.\n\n" +
++      "تاپیک‌های 💰 مالی، 🖥 سرورها، 🚨 خطا و 📨 پیگیری خودکار ساخته می‌شوند."
++    );
++  }
++  const rows = (Object.keys(TOPICS) as Topic[])
++    .map((t) => `${TOPICS[t].icon} ${TOPICS[t].title}: ${g.topics[t] ? "✅" : "❌ ساخته نشده"}`)
++    .join("\n");
++  return head + `✅ متصل است\n🆔 گروه: <code>${g.chatId}</code>\n\n${rows}`;
++}
++
++async function panelKb() {
++  const g = await getGroup();
++  const kb = new InlineKeyboard();
++  if (g.chatId) {
++    kb.text("🧪 ارسال پیام تست", "adm:grp:test").text("🖥 گزارش سرورها", "adm:grp:rep").row();
++    kb.text("🔄 ساخت تاپیک‌های ناقص", "adm:grp:fix").row();
++    kb.text("❌ قطع اتصال گروه", "adm:grp:off").row();
++  }
++  return kb.text("🔄 بروزرسانی", "adm:grp").row().text("🔙 پنل مدیریت", "admin");
++}
++
++export function registerAdminGroup(bot: Bot<BotContext>) {
++  // ── دکمه‌ی پنل مدیریت ──
++  bot.callbackQuery("adm:grp", async (ctx) => {
++    if (!isAdmin(ctx)) return alert(ctx, "دسترسی ندارید");
++    await setState(uid(ctx), null);
++    await show(ctx, await panelText(), await panelKb());
++  });
++
++  // ── اتصال: داخل گروه /setgroup  (یا در خصوصی: /setgroup <chat_id>) ──
++  bot.command("setgroup", async (ctx) => {
++    if (!isAdmin(ctx)) return;
++    const arg = ctx.match.trim();
++    let chatId: number;
++    if (ctx.chat.type === "group" || ctx.chat.type === "supergroup") chatId = ctx.chat.id;
++    else if (/^-100\d{5,}$/.test(arg)) chatId = Number(arg);
++    else {
++      return void ctx.reply(
++        "این دستور را باید <b>داخل گروه</b> بفرستید.\n(یا در اینجا: <code>/setgroup -100xxxxxxxxxx</code>)",
++        { parse_mode: "HTML" },
++      );
++    }
++    const r = await setupGroup(ctx.api, chatId);
++    if (!r.ok) return void ctx.reply("❌ " + r.error).catch(() => {});
++    await report(ctx.api, "finance", `✅ <b>گروه مدیریتی متصل شد</b>\n🕒 ${stamp()}\nگزارش تراکنش‌های مالی در این تاپیک ارسال می‌شود.`);
++    await report(ctx.api, "servers", `✅ گزارش وضعیت سرورها هر ۶ ساعت در این تاپیک ارسال می‌شود.`);
++    await report(ctx.api, "errors", `✅ خطاها و مشکلات سرورها در این تاپیک گزارش می‌شوند.`);
++    await report(ctx.api, "followup", `✅ گزارش‌های کاربران و درخواست‌های پیگیری در این تاپیک ثبت می‌شوند.`);
++    if (ctx.chat.type !== "private") {
++      await ctx.api.sendMessage(ctx.from!.id, "✅ گروه مدیریتی متصل شد و تاپیک‌ها ساخته شدند.", { reply_markup: await panelKb() }).catch(() => {});
++    } else {
++      await ctx.reply("✅ گروه متصل شد.", { reply_markup: await panelKb() });
++    }
++  });
++
++  bot.callbackQuery("adm:grp:test", async (ctx) => {
++    if (!isAdmin(ctx)) return alert(ctx, "دسترسی ندارید");
++    let okCount = 0;
++    for (const t of Object.keys(TOPICS) as Topic[]) {
++      if (await report(ctx.api, t, `🧪 پیام تست — ${stamp()}`)) okCount++;
++    }
++    await alert(ctx, okCount === 4 ? "✅ پیام تست در هر ۴ تاپیک ارسال شد" : `فقط ${okCount} از ۴ تاپیک ارسال شد؛ «ساخت تاپیک‌های ناقص» را بزنید`);
++  });
++
++  bot.callbackQuery("adm:grp:rep", async (ctx) => {
++    if (!isAdmin(ctx)) return alert(ctx, "دسترسی ندارید");
++    await alert(ctx, "⏳ بررسی شروع شد؛ گزارش تا چند دقیقه‌ی دیگر در تاپیک سرورها ارسال می‌شود.");
++    void sendServerReport(ctx.api).catch((e) => console.error("server report failed", e));
++  });
++
++  bot.callbackQuery("adm:grp:fix", async (ctx) => {
++    if (!isAdmin(ctx)) return alert(ctx, "دسترسی ندارید");
++    const g = await getGroup();
++    if (!g.chatId) return alert(ctx, "گروهی متصل نیست");
++    const r = await setupGroup(ctx.api, g.chatId);
++    if (!r.ok) return alert(ctx, r.error);
++    await show(ctx, await panelText(), await panelKb(), "✅ انجام شد");
++  });
++
++  bot.callbackQuery("adm:grp:off", async (ctx) => {
++    if (!isAdmin(ctx)) return alert(ctx, "دسترسی ندارید");
++    await show(
++      ctx,
++      "❌ اتصال گروه قطع شود؟\nگزارش‌ها دیگر به گروه ارسال نمی‌شوند (خطاها به پیام خصوصی ادمین‌ها برمی‌گردند). تاپیک‌ها در گروه پاک نمی‌شوند.",
++      new InlineKeyboard().text("✅ بله، قطع شود", "adm:grp:off2").text("↩️ انصراف", "adm:grp"),
++    );
++  });
++  bot.callbackQuery("adm:grp:off2", async (ctx) => {
++    if (!isAdmin(ctx)) return alert(ctx, "دسترسی ندارید");
++    await disconnectGroup();
++    await show(ctx, await panelText(), await panelKb(), "قطع شد");
++  });
++
++}
+
+--- a/src/bot/handlers/adminPanel.ts	2026-10-31 20:56:02.000000000 +0000
++++ b/src/bot/handlers/adminPanel.ts	2026-11-01 17:38:48.464531633 +0000
+@@ -5,6 +5,7 @@
+ import { query, queryOne, withTx } from "@/lib/db";
+ import { getState, setState } from "@/lib/state";
+ import { alert, esc, fmt, normalizeDigits, show, uid } from "../helpers";
++import { codes, payerInfo, report, stamp } from "@/lib/adminGroup";
+ 
+ const PAGE_SIZE = 10;
+ const TZ = "Asia/Tehran";
+@@ -26,6 +27,8 @@
+     .row()
+     .text("🛍 مدیریت فروش و کاتالوگ", "adm:cat")
+     .row()
++    .text("👥 تنظیم گروه مدیریتی", "adm:grp")
++    .row()
+     .text("⚙️ تنظیمات ربات", "adm:set")
+     .text("🔌 وضعیت Virtualizor", "adm:virt")
+     .row()
+@@ -326,6 +329,7 @@
+     const { target, op, amount } = row.data;
+     const delta = op === "add" ? amount : -amount;
+ 
++    let adjId = 0;
+     const newBalance = await withTx(async (c) => {
+       const r = await c.query<{ balance: number }>(
+         `UPDATE users SET balance = balance + $1
+@@ -334,10 +338,11 @@
+         [delta, target],
+       );
+       if (r.rows.length === 0) return null;
+-      await c.query(
+-        "INSERT INTO balance_adjustments (admin_id, user_id, amount, balance_after) VALUES ($1,$2,$3,$4)",
++      const adj = await c.query<{ id: number }>(
++        "INSERT INTO balance_adjustments (admin_id, user_id, amount, balance_after) VALUES ($1,$2,$3,$4) RETURNING id",
+         [uid(ctx), target, delta, r.rows[0].balance],
+       );
++      adjId = adj.rows[0].id;
+       return r.rows[0].balance;
+     });
+ 
+@@ -345,6 +350,14 @@
+       return show(ctx, "❌ انجام نشد؛ موجودی کاربر برای این کاهش کافی نیست یا کاربر وجود ندارد.", toPanelKb());
+     }
+ 
++    void (async () =>
++      report(
++        ctx.api,
++        "finance",
++        `${op === "add" ? "➕ <b>افزایش دستی موجودی (واریز)</b>" : "➖ <b>کاهش دستی موجودی (برداشت)</b>"} — کد <code>${codes.adjust(adjId)}</code>\n🕒 ${stamp()}\n` +
++          `💵 مبلغ: <b>${fmt(amount)}</b> تومان\n${await payerInfo(target)}\n👮 ادمین: <code>${uid(ctx)}</code>`,
++      ))().catch(() => {});
++
+     await ctx.api
+       .sendMessage(
+         target,
+
+--- a/src/bot/handlers/buy.ts	2026-10-30 22:51:26.000000000 +0000
++++ b/src/bot/handlers/buy.ts	2026-11-01 17:38:48.465064232 +0000
+@@ -9,6 +9,7 @@
+ import { alert, esc, fmt, planButton, show, specText, uid } from "../helpers";
+ import { backKb } from "../keyboards";
+ import { getSettings } from "@/lib/settings";
++import { codes, payerInfo, report, stamp } from "@/lib/adminGroup";
+ 
+ interface Loc {
+   key: string;
+@@ -126,6 +127,15 @@
+     );
+     if ("error" in result) return alert(ctx, result.error);
+ 
++    void (async () =>
++      report(
++        ctx.api,
++        "finance",
++        `🛒 <b>خرید سرویس</b> — کد <code>${codes.buy(result.sid)}</code>\n🕒 ${stamp()}\n` +
++          `🖥 سرور #${result.sid} | ${mode === "monthly" ? "🗓 ماهانه (هزینه‌ی روز تست)" : "⏰ ساعتی"}\n` +
++          `💵 کسر شده: <b>${fmt(result.charged)}</b> تومان\n${await payerInfo(uid(ctx))}`,
++      ))().catch(() => {});
++
+     // ۲) ساخت در پس‌زمینه (ممکن است چند ده ثانیه طول بکشد)
+     void startProvisioning(ctx.api, result.sid);
+     await show(
+
+--- a/src/bot/handlers/userReport.ts	1970-01-01 00:00:00.000000000 +0000
++++ b/src/bot/handlers/userReport.ts	2026-11-01 17:38:25.317569471 +0000
+@@ -0,0 +1,55 @@
++import { InlineKeyboard } from "grammy";
++import type { Bot } from "grammy";
++import type { BotContext } from "../context";
++import { config } from "@/lib/config";
++import { queryOne } from "@/lib/db";
++import { getState, setState } from "@/lib/state";
++import { codes, esc, getGroup, payerInfo, report, stamp } from "@/lib/adminGroup";
++import { show, uid } from "../helpers";
++import { backKb } from "../keyboards";
++
++/** کاربر از «تماس با پشتیبانی» گزارش می‌فرستد ← تاپیک «پیگیری» در گروه مدیریتی (یا پیام خصوصی به ادمین‌ها) */
++export function registerUserReport(bot: Bot<BotContext>) {
++  bot.callbackQuery("urep", async (ctx) => {
++    await setState(uid(ctx), "urep_wait");
++    await show(
++      ctx,
++      "📝 <b>ارسال گزارش به پشتیبانی</b>\n\nمشکل یا درخواست خود را بنویسید (می‌توانید عکس هم بفرستید). شماره‌ی سرور را هم ذکر کنید.",
++      new InlineKeyboard().text("❌ انصراف", "home"),
++    );
++  });
++
++  bot.on("message", async (ctx, next) => {
++    if (ctx.chat.type !== "private") return next();
++    const st = await getState(uid(ctx));
++    if (st.state !== "urep_wait") return next();
++    if (ctx.message.text?.startsWith("/")) return next();
++    if (ctx.message.media_group_id) return void ctx.reply("❌ آلبوم پشتیبانی نمی‌شود؛ یک پیام (متن یا تک‌عکس) بفرستید.");
++
++    const row = await queryOne<{ id: number }>("INSERT INTO user_reports (user_id) VALUES ($1) RETURNING id", [uid(ctx)]);
++    const code = codes.report(row!.id);
++    await setState(uid(ctx), null);
++
++    const header =
++      `📨 <b>گزارش کاربر</b> — کد <code>${code}</code>\n🕒 ${stamp()}\n` + (await payerInfo(uid(ctx)));
++
++    const g = await getGroup();
++    let delivered = false;
++    if (g.chatId && g.topics.followup) {
++      delivered = await report(ctx.api, "followup", header);
++      await ctx.api
++        .copyMessage(g.chatId, ctx.chat.id, ctx.message.message_id, { message_thread_id: g.topics.followup })
++        .catch((e) => console.error("copy report failed", e));
++    }
++    if (!delivered) {
++      for (const a of config.admins) {
++        await ctx.api.sendMessage(a, header, { parse_mode: "HTML" }).catch(() => {});
++        await ctx.api.copyMessage(a, ctx.chat.id, ctx.message.message_id).catch(() => {});
++      }
++    }
++    await ctx.reply(`✅ گزارش شما ثبت شد.\nکد پیگیری: <code>${esc(code)}</code>\nپشتیبانی در اسرع وقت بررسی می‌کند.`, {
++      parse_mode: "HTML",
++      reply_markup: backKb(),
++    });
++  });
++}
+
+--- a/src/bot/handlers/wallet.ts	2026-10-30 22:51:26.000000000 +0000
++++ b/src/bot/handlers/wallet.ts	2026-11-01 17:38:48.463318671 +0000
+@@ -7,6 +7,7 @@
+ import { esc, fmt, normalizeDigits, show, uid } from "../helpers";
+ import { backKb, mainMenu } from "../keyboards";
+ import { getSettings } from "@/lib/settings";
++import { codes, payerInfo, reportPhoto, stamp } from "@/lib/adminGroup";
+ 
+ export function registerWallet(bot: Bot<BotContext>) {
+   // ── حساب کاربری ───────────────────────────────────────────
+@@ -31,7 +32,7 @@
+ 
+   // ── پشتیبانی / قوانین ─────────────────────────────────────
+   bot.callbackQuery("support", (ctx) =>
+-    (async () => show(ctx, `🆘 برای ارتباط با پشتیبانی پیام دهید:\n${esc((await getSettings()).support)}`, backKb()))(),
++    (async () => show(ctx, `🆘 برای ارتباط با پشتیبانی پیام دهید:\n${esc((await getSettings()).support)}`, backKb([["📝 ارسال گزارش به پشتیبانی", "urep"]])))(),
+   );
+   bot.callbackQuery("terms", (ctx) => show(ctx, TERMS, backKb()));
+ 
+@@ -99,6 +100,15 @@
+     await setState(id, null);
+     await ctx.reply("✅ رسید ثبت شد. پس از تأیید ادمین، حساب شما شارژ می‌شود.", { reply_markup: mainMenu(id) });
+ 
++    void (async () =>
++      reportPhoto(
++        ctx.api,
++        "finance",
++        fileId,
++        `💳 <b>درخواست واریز</b> — کد <code>${codes.deposit(pay!.id)}</code>\n🕒 ${stamp()}\n` +
++          `💵 مبلغ: <b>${fmt(amount)}</b> تومان\n${await payerInfo(id)}\n⏳ وضعیت: در انتظار تأیید`,
++      ))().catch(() => {});
++
+     const kb = new InlineKeyboard().text("✅ تأیید", `payok:${pay!.id}`).text("❌ رد", `payno:${pay!.id}`);
+     for (const admin of config.admins) {
+       await ctx.api
+
+--- a/src/bot/index.ts	2026-10-31 20:56:02.000000000 +0000
++++ b/src/bot/index.ts	2026-11-01 17:38:09.679629589 +0000
+@@ -2,6 +2,7 @@
+ import type { BotContext } from "./context";
+ import { config } from "@/lib/config";
+ import { queryOne } from "@/lib/db";
++import { esc, reportError, stamp } from "@/lib/adminGroup";
+ import { registerStart } from "./handlers/start";
+ import { registerBuy } from "./handlers/buy";
+ import { registerServices } from "./handlers/services";
+@@ -10,6 +11,8 @@
+ import { registerAdminVirt } from "./handlers/adminVirt";
+ import { registerAdminCatalog } from "./handlers/adminCatalog";
+ import { registerAdminPanel } from "./handlers/adminPanel";
++import { registerAdminGroup } from "./handlers/adminGroup";
++import { registerUserReport } from "./handlers/userReport";
+ 
+ const g = globalThis as unknown as { __bot?: Bot<BotContext> };
+ 
+@@ -35,12 +38,18 @@
+   registerAdmin(bot);
+   registerAdminVirt(bot); // قبل از registerAdminPanel (فالبک adm:*)
+   registerAdminCatalog(bot); // پلن/لوکیشن/OS/تنظیمات از داخل پنل ادمین
++  registerAdminGroup(bot); // گروه مدیریتی (قبل از فالبک adm:*)
++  registerUserReport(bot); // گزارش کاربران ← تاپیک پیگیری
+   registerAdminPanel(bot); // باید قبل از registerWallet باشد (پیام همگانی)
+   registerBuy(bot);
+   registerServices(bot);
+   registerWallet(bot); // شامل message:text و message:photo؛ آخر ثبت شود
+ 
+-  bot.catch((err) => console.error("bot error:", err.error));
++  bot.catch((err) => {
++    console.error("bot error:", err.error);
++    const m = err.error instanceof Error ? err.error.message : String(err.error);
++    void reportError(bot.api, `🚨 <b>خطای ربات</b>\n🕒 ${stamp()}\n<code>${esc(m).slice(0, 600)}</code>`);
++  });
+   return bot;
+ }
+ 
+
+--- a/src/lib/adminGroup.ts	1970-01-01 00:00:00.000000000 +0000
++++ b/src/lib/adminGroup.ts	2026-11-01 17:37:06.944109813 +0000
+@@ -0,0 +1,166 @@
++import type { Api } from "grammy";
++import { config } from "./config";
++import { query, queryOne } from "./db";
++
++/**
++ * گروه مدیریتی (سوپرگروه با تاپیک): گزارش‌های مالی، سرورها، خطاها و پیگیری کاربران.
++ * تنظیمات در جدول settings ذخیره می‌شود (بدون نیاز به تغییر schema).
++ */
++export type Topic = "finance" | "servers" | "errors" | "followup";
++
++export const TOPICS: Record<Topic, { key: string; title: string; icon: string }> = {
++  finance: { key: "grp_topic_finance", title: "مالی", icon: "💰" },
++  servers: { key: "grp_topic_servers", title: "سرورها", icon: "🖥" },
++  errors: { key: "grp_topic_errors", title: "خطا", icon: "🚨" },
++  followup: { key: "grp_topic_followup", title: "پیگیری", icon: "📨" },
++};
++const GROUP_KEY = "grp_chat_id";
++const TOPIC_NAMES = Object.keys(TOPICS) as Topic[];
++
++export const esc = (s: unknown) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
++export const fmtN = (x: number) => Number(x).toLocaleString("en-US");
++
++async function getKV(keys: string[]): Promise<Map<string, string>> {
++  const rows = await query<{ key: string; value: string }>("SELECT key, value FROM settings WHERE key = ANY($1)", [keys]);
++  return new Map(rows.map((r) => [r.key, r.value]));
++}
++async function setKV(key: string, value: string) {
++  await query("INSERT INTO settings (key, value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value", [key, value]);
++}
++export async function delKV(keys: string[]) {
++  await query("DELETE FROM settings WHERE key = ANY($1)", [keys]);
++}
++
++export interface GroupConfig {
++  chatId: number | null;
++  topics: Partial<Record<Topic, number>>;
++}
++
++export async function getGroup(): Promise<GroupConfig> {
++  const m = await getKV([GROUP_KEY, ...TOPIC_NAMES.map((t) => TOPICS[t].key)]);
++  const chatId = m.has(GROUP_KEY) ? Number(m.get(GROUP_KEY)) : null;
++  const topics: GroupConfig["topics"] = {};
++  for (const t of TOPIC_NAMES) {
++    const v = m.get(TOPICS[t].key);
++    if (v && Number.isFinite(Number(v))) topics[t] = Number(v);
++  }
++  return { chatId: chatId && Number.isFinite(chatId) ? chatId : null, topics };
++}
++
++export async function disconnectGroup() {
++  await delKV([GROUP_KEY, ...TOPIC_NAMES.map((t) => TOPICS[t].key)]);
++}
++
++/** ساخت تاپیک‌ها در گروه و ذخیره‌ی تنظیمات. در صورت خطا پیام فارسی قابل‌فهم برمی‌گرداند. */
++export async function setupGroup(api: Api, chatId: number): Promise<{ ok: true } | { ok: false; error: string }> {
++  try {
++    const chat = await api.getChat(chatId);
++    if (chat.type !== "supergroup") return { ok: false, error: "این چت «سوپرگروه» نیست. گروه را به سوپرگروه تبدیل کنید." };
++    if (!("is_forum" in chat) || !chat.is_forum) {
++      return { ok: false, error: "قابلیت «Topics» (تاپیک) در گروه روشن نیست. تنظیمات گروه ← Topics را فعال کنید." };
++    }
++    const me = await api.getChatMember(chatId, (await api.getMe()).id);
++    const canManage = me.status === "creator" || (me.status === "administrator" && me.can_manage_topics);
++    if (!canManage) return { ok: false, error: "ربات باید «ادمین» باشد و دسترسی «Manage Topics» (مدیریت تاپیک‌ها) داشته باشد." };
++  } catch (e) {
++    return { ok: false, error: "دسترسی به گروه ممکن نیست: " + errText(e) };
++  }
++
++  // اگر قبلاً همین گروه ست شده، تاپیک‌های موجود را دوباره نساز
++  const cur = await getGroup();
++  const keep = cur.chatId === chatId ? cur.topics : {};
++  try {
++    for (const t of TOPIC_NAMES) {
++      if (keep[t]) continue;
++      const created = await api.createForumTopic(chatId, `${TOPICS[t].icon} ${TOPICS[t].title}`);
++      await setKV(TOPICS[t].key, String(created.message_thread_id));
++    }
++    await setKV(GROUP_KEY, String(chatId));
++  } catch (e) {
++    return { ok: false, error: "ساخت تاپیک انجام نشد: " + errText(e) };
++  }
++  return { ok: true };
++}
++
++const errText = (e: unknown) => (e instanceof Error ? e.message : String(e)).slice(0, 200);
++
++/**
++ * ارسال به تاپیک. هرگز خطا پرتاب نمی‌کند (گزارش‌دهی نباید جریان اصلی را خراب کند).
++ * اگر تاپیک پاک شده باشد، یک‌بار دوباره ساخته می‌شود.
++ * برمی‌گرداند true = در گروه ارسال شد؛ false = گروه تنظیم نیست یا ارسال نشد.
++ */
++export async function report(api: Api, topic: Topic, html: string, extra: Record<string, unknown> = {}): Promise<boolean> {
++  try {
++    const g = await getGroup();
++    if (!g.chatId) return false;
++    const send = (thread: number) =>
++      api.sendMessage(g.chatId!, html.slice(0, 4000), {
++        parse_mode: "HTML",
++        message_thread_id: thread,
++        link_preview_options: { is_disabled: true },
++        ...extra,
++      });
++    let thread = g.topics[topic];
++    if (!thread) thread = await recreateTopic(api, g.chatId, topic);
++    try {
++      await send(thread);
++    } catch (e) {
++      if (/thread not found|TOPIC_ID_INVALID|TOPIC_DELETED/i.test(String(e))) {
++        thread = await recreateTopic(api, g.chatId, topic);
++        await send(thread);
++      } else throw e;
++    }
++    return true;
++  } catch (e) {
++    console.error("adminGroup.report failed:", errText(e));
++    return false;
++  }
++}
++
++/** ارسال عکس (رسید) به تاپیک مالی */
++export async function reportPhoto(api: Api, topic: Topic, fileId: string, caption: string): Promise<boolean> {
++  try {
++    const g = await getGroup();
++    if (!g.chatId) return false;
++    const thread = g.topics[topic] ?? (await recreateTopic(api, g.chatId, topic));
++    await api.sendPhoto(g.chatId, fileId, { caption: caption.slice(0, 1000), parse_mode: "HTML", message_thread_id: thread });
++    return true;
++  } catch (e) {
++    console.error("adminGroup.reportPhoto failed:", errText(e));
++    return false;
++  }
++}
++
++async function recreateTopic(api: Api, chatId: number, topic: Topic): Promise<number> {
++  const created = await api.createForumTopic(chatId, `${TOPICS[topic].icon} ${TOPICS[topic].title}`);
++  await setKV(TOPICS[topic].key, String(created.message_thread_id));
++  return created.message_thread_id;
++}
++
++/** خطاها: اگر گروه تنظیم باشد در تاپیک «خطا»، وگرنه مثل قبل پیام خصوصی به ادمین‌ها */
++export async function reportError(api: Api, html: string, extra: Record<string, unknown> = {}) {
++  if (await report(api, "errors", html, extra)) return;
++  for (const id of config.admins) await api.sendMessage(id, html.slice(0, 4000), { parse_mode: "HTML", ...extra }).catch(() => {});
++}
++
++// ───────────────────────── کد شناسه تراکنش‌ها ─────────────────────────
++export const codes = {
++  deposit: (id: number) => `PAY-${id}`,
++  buy: (sid: number) => `BUY-${sid}`,
++  adjust: (id: number) => `ADJ-${id}`,
++  refund: (sid: number) => `RFD-${sid}`,
++  renew: (sid: number) => `RNW-${sid}`,
++  report: (id: number) => `RPT-${id}`,
++};
++
++export const stamp = () =>
++  new Date().toLocaleString("fa-IR", { timeZone: "Asia/Tehran", dateStyle: "short", timeStyle: "short" });
++
++/** اطلاعات پرداخت‌کننده/کاربر */
++export async function payerInfo(userId: number): Promise<string> {
++  const u = await queryOne<{ username: string | null; balance: number }>("SELECT username, balance FROM users WHERE id=$1", [userId]);
++  return (
++    `👤 کاربر: <code>${userId}</code>${u?.username ? " @" + esc(u.username) : ""}\n` +
++    `💳 موجودی فعلی: <b>${fmtN(u?.balance ?? 0)}</b> تومان`
++  );
++}
+
+--- a/src/lib/billing.ts	2026-10-30 22:40:38.000000000 +0000
++++ b/src/lib/billing.ts	2026-11-01 17:39:00.482126444 +0000
+@@ -2,6 +2,8 @@
+ import { query, withTx } from "./db";
+ import { powerAction } from "./provider";
+ import { recoverStuck } from "./provisioning";
++import { codes, esc, payerInfo, report, reportError, stamp } from "./adminGroup";
++import { maybeSendServerReport } from "./serverReport";
+ 
+ const n = (x: number) => x.toLocaleString("en-US");
+ const TZ = "Asia/Tehran";
+@@ -123,6 +125,7 @@
+ export async function runBilling(api: Api) {
+   await recoverStuck(api).catch((e) => console.error("recoverStuck error", e));
+   await warnUpcoming(api).catch((e) => console.error("warnUpcoming error", e));
++  await maybeSendServerReport(api).catch((e) => console.error("server report error", e));
+ 
+   const due = await query<{ id: number; mode: string }>(
+     `SELECT id, billing_mode AS mode FROM services
+@@ -146,6 +149,13 @@
+         }
+       } else if (r.kind === "m_charged") {
+         charged++;
++        void (async () =>
++          report(
++            api,
++            "finance",
++            `${r.wasTrial ? "✅ <b>پایان تست و کسر مابقی (ماهانه)</b>" : "🔁 <b>تمدید سرویس ماهانه</b>"} — کد <code>${codes.renew(r.serviceId)}</code>\n🕒 ${stamp()}\n` +
++              `🖥 سرور #${r.serviceId}\n💵 کسر شده: <b>${n(r.amount)}</b> تومان\n${await payerInfo(r.userId)}`,
++          ))().catch(() => {});
+         await api
+           .sendMessage(
+             r.userId,
+@@ -156,13 +166,21 @@
+           .catch(() => {});
+       } else if (r.kind === "suspended" || r.kind === "m_suspended") {
+         suspended++;
+-        await powerAction(r.serviceId, "off").catch(() => {});
++        void report(
++          api,
++          "servers",
++          `⏸ <b>سرور متوقف شد (کمبود موجودی)</b>\n🕒 ${stamp()}\n🖥 #${r.serviceId} | 👤 کاربر: <code>${r.userId}</code>`,
++        );
++        await powerAction(r.serviceId, "off").catch((e) =>
++          reportError(api, `🚨 <b>خاموش کردن سرور #${r.serviceId} در پنل ناموفق بود</b>\n<code>${esc(e instanceof Error ? e.message : e).slice(0, 400)}</code>`),
++        );
+         await api
+           .sendMessage(r.userId, `🔴 به دلیل کمبود موجودی، سرور #${r.serviceId} خاموش و متوقف شد.`)
+           .catch(() => {});
+       }
+     } catch (e) {
+       console.error("billing error for service", id, e);
++      void reportError(api, `🚨 <b>خطا در صورتحساب سرویس #${id}</b>\n🕒 ${stamp()}\n<code>${esc(e instanceof Error ? e.message : e).slice(0, 400)}</code>`);
+     }
+   }
+   return { due: due.length, charged, suspended };
+
+--- a/src/lib/provisioning.ts	2026-10-30 22:51:26.000000000 +0000
++++ b/src/lib/provisioning.ts	2026-11-01 17:39:00.481480799 +0000
+@@ -1,9 +1,9 @@
+ import type { Api } from "grammy";
+-import { config } from "./config";
+ import { query, queryOne, withTx } from "./db";
+ import { hostnameFor, provisionServer } from "./provider";
+ import * as V from "./virtualizor";
+ import { getSettings } from "./settings";
++import { codes, payerInfo, report, reportError, stamp } from "./adminGroup";
+ 
+ const esc = (s: unknown) =>
+   String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+@@ -16,8 +16,9 @@
+     .catch(() => {});
+ }
+ 
++/** خطاها ← تاپیک «خطا» در گروه مدیریتی (اگر گروه نباشد، پیام خصوصی به ادمین‌ها) */
+ async function tellAdmins(api: Api, text: string) {
+-  for (const id of config.admins) await api.sendMessage(id, text, { parse_mode: "HTML" }).catch(() => {});
++  await reportError(api, text);
+ }
+ 
+ interface Cred {
+@@ -59,6 +60,11 @@
+   );
+   if (!row) return false;
+   await tell(api, row.user_id, credentials(row));
++  void report(
++    api,
++    "servers",
++    `🆕 <b>سرور جدید ساخته شد</b>\n🕒 ${stamp()}\n🖥 #${row.id} | 🌐 <code>${esc(row.ip ?? "در حال تخصیص")}</code> | ${row.billing_mode === "monthly" ? "ماهانه" : "ساعتی"}\n👤 کاربر: <code>${row.user_id}</code>`,
++  );
+   return true;
+ }
+ 
+@@ -78,6 +84,13 @@
+     return s;
+   });
+   if (!r) return;
++  void (async () =>
++    report(
++      api,
++      "finance",
++      `↩️ <b>بازگشت وجه (ساخت ناموفق)</b> — کد <code>${codes.refund(serviceId)}</code>\n🕒 ${stamp()}\n` +
++        `🖥 سرور #${serviceId}\n💵 مبلغ: <b>${r.amount.toLocaleString("en-US")}</b> تومان\n${await payerInfo(r.user_id)}`,
++    ))().catch(() => {});
+   await tell(
+     api,
+     r.user_id,
+
+--- a/src/lib/serverReport.ts	1970-01-01 00:00:00.000000000 +0000
++++ b/src/lib/serverReport.ts	2026-11-01 17:38:09.661990943 +0000
+@@ -0,0 +1,208 @@
++import type { Api } from "grammy";
++import net from "node:net";
++import { query, queryOne } from "./db";
++import * as V from "./virtualizor";
++import { delKV, esc, fmtN, getGroup, report, stamp } from "./adminGroup";
++
++const MAX_PROBE = 40; // سقف سرورهای بررسی‌شده در هر گزارش (محدودیت سرویس‌های بیرونی)
++const g = globalThis as unknown as { __srvReporting?: boolean; __irNodes?: { at: number; nodes: string[] } };
++
++interface Svc {
++  id: number;
++  ip: string | null;
++  vps_id: number | null;
++  power: string;
++}
++type Ping = "up" | "down" | "unknown";
++
++// ───────────────────────── بررسی سلامت (TCP از سرور ربات) ─────────────────────────
++/** سالم = IP پاسخ دهد (اتصال برقرار شود یا رد شود؛ هر دو یعنی هاست بالاست). timeout/unreachable = ناسالم */
++function tcpProbe(ip: string, port = 22, ms = 4000): Promise<boolean> {
++  return new Promise((resolve) => {
++    const s = net.connect({ host: ip, port });
++    const done = (v: boolean) => {
++      s.destroy();
++      resolve(v);
++    };
++    s.setTimeout(ms, () => done(false));
++    s.once("connect", () => done(true));
++    s.once("error", (e: NodeJS.ErrnoException) => done(e.code === "ECONNREFUSED"));
++  });
++}
++
++// ───────────────────────── دسترسی از ایران (check-host.net) ─────────────────────────
++async function irNodes(): Promise<string[]> {
++  if (g.__irNodes && Date.now() - g.__irNodes.at < 3600_000) return g.__irNodes.nodes;
++  const r = await fetch("https://check-host.net/nodes/hosts", { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(10_000) });
++  const j = (await r.json()) as { nodes?: Record<string, { location?: string[] }> };
++  const nodes = Object.entries(j.nodes ?? {})
++    .filter(([, v]) => v.location?.[0]?.toLowerCase() === "ir")
++    .map(([k]) => k)
++    .slice(0, 4);
++  g.__irNodes = { at: Date.now(), nodes };
++  return nodes;
++}
++
++const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
++
++/** پینگ از نودهای ایران؛ up = حداقل یک نود ایرانی پاسخ گرفت */
++async function irPing(ip: string): Promise<Ping> {
++  try {
++    const nodes = await irNodes();
++    if (!nodes.length) return "unknown";
++    const qs = nodes.map((n) => `node=${encodeURIComponent(n)}`).join("&");
++    const start = await fetch(`https://check-host.net/check-ping?host=${encodeURIComponent(ip)}&${qs}`, {
++      headers: { Accept: "application/json" },
++      signal: AbortSignal.timeout(10_000),
++    });
++    const s = (await start.json()) as { ok?: number; request_id?: string };
++    if (!s.ok || !s.request_id) return "unknown";
++    for (let i = 0; i < 4; i++) {
++      await sleep(i === 0 ? 5000 : 3000);
++      const res = await fetch(`https://check-host.net/check-result/${s.request_id}`, {
++        headers: { Accept: "application/json" },
++        signal: AbortSignal.timeout(10_000),
++      });
++      const j = (await res.json()) as Record<string, unknown>;
++      const vals = nodes.map((n) => j[n]);
++      if (vals.some((v) => v === null || v === undefined) && i < 3) continue; // هنوز در حال بررسی
++      let anyData = false;
++      for (const v of vals) {
++        const rows = Array.isArray(v) ? (v[0] as unknown) : null;
++        if (!Array.isArray(rows)) continue;
++        anyData = true;
++        if (rows.some((x) => Array.isArray(x) && x[0] === "OK")) return "up";
++      }
++      return anyData ? "down" : "unknown";
++    }
++    return "unknown";
++  } catch {
++    return "unknown";
++  }
++}
++
++async function pool<T, R>(items: T[], n: number, fn: (x: T) => Promise<R>): Promise<R[]> {
++  const out: R[] = new Array(items.length);
++  let i = 0;
++  await Promise.all(
++    Array.from({ length: Math.min(n, items.length) }, async () => {
++      while (i < items.length) {
++        const k = i++;
++        out[k] = await fn(items[k]);
++      }
++    }),
++  );
++  return out;
++}
++
++// ───────────────────────── ساخت گزارش ─────────────────────────
++export async function buildServerReport(): Promise<{ text: string; problems: string[] }> {
++  const c = await queryOne<Record<string, number>>(
++    `SELECT
++       count(*) FILTER (WHERE status='active')::int AS active,
++       count(*) FILTER (WHERE status='active' AND power='on')::int AS on_,
++       count(*) FILTER (WHERE status='active' AND power='off')::int AS off_,
++       count(*) FILTER (WHERE status='suspended')::int AS suspended,
++       count(*) FILTER (WHERE status='deleted')::int AS deleted,
++       count(*) FILTER (WHERE status='failed')::int AS failed,
++       count(*) FILTER (WHERE status='provisioning')::int AS prov
++     FROM services`,
++  );
++
++  const svcs = await query<Svc>(
++    `SELECT id, ip, vps_id, power FROM services WHERE status='active' AND ip IS NOT NULL ORDER BY id LIMIT ${MAX_PROBE + 1}`,
++  );
++  const truncated = svcs.length > MAX_PROBE;
++  const list = svcs.slice(0, MAX_PROBE);
++
++  // وضعیت از دید پنل Virtualizor
++  let panelOk = true;
++  const panelRunning = new Map<number, boolean>();
++  if (V.isConfigured()) {
++    try {
++      for (const v of await V.listVps()) {
++        const st = (v.raw as Record<string, unknown>).status;
++        if (st !== undefined) panelRunning.set(v.vpsid, Number(st) === 1);
++      }
++    } catch {
++      panelOk = false;
++    }
++  } else panelOk = false;
++
++  const tcp = await pool(list, 8, (s) => tcpProbe(s.ip!));
++  const ir = await pool(list, 4, (s) => irPing(s.ip!));
++
++  let healthy = 0;
++  let unhealthy = 0;
++  let irUp = 0;
++  let irDown = 0;
++  let irUnknown = 0;
++  const problems: string[] = [];
++  list.forEach((s, i) => {
++    const poweredOff = s.power === "off" || panelRunning.get(s.vps_id ?? -1) === false;
++    const ok = tcp[i] && !poweredOff;
++    if (ok) healthy++;
++    else {
++      unhealthy++;
++      problems.push(`#${s.id} <code>${esc(s.ip)}</code> — ${poweredOff ? "خاموش" : "بدون پاسخ"}`);
++    }
++    if (ir[i] === "up") irUp++;
++    else if (ir[i] === "down") {
++      irDown++;
++      problems.push(`#${s.id} <code>${esc(s.ip)}</code> — عدم دسترسی از ایران`);
++    } else irUnknown++;
++  });
++
++  const text =
++    `🖥 <b>گزارش وضعیت سرورها</b>\n🕒 ${stamp()}\n\n` +
++    `🟢 <b>سرورهای فعال:</b> ${fmtN(c?.active ?? 0)} (روشن: ${fmtN(c?.on_ ?? 0)} | خاموش: ${fmtN(c?.off_ ?? 0)})\n` +
++    `🔴 <b>سرورهای غیرفعال:</b> ${fmtN((c?.suspended ?? 0) + (c?.deleted ?? 0) + (c?.failed ?? 0))}\n` +
++    `    ⏸ متوقف‌شده (کمبود موجودی): ${fmtN(c?.suspended ?? 0)}\n` +
++    `    🗑 حذف‌شده: ${fmtN(c?.deleted ?? 0)}\n` +
++    `    ❌ ساخت ناموفق: ${fmtN(c?.failed ?? 0)}\n` +
++    `⏳ در حال ساخت: ${fmtN(c?.prov ?? 0)}\n\n` +
++    `🩺 <b>سلامت سرورها</b> (از ${fmtN(list.length)} سرور فعال دارای IP)\n` +
++    `✅ سالم: <b>${fmtN(healthy)}</b>\n⚠️ ناسالم: <b>${fmtN(unhealthy)}</b>\n\n` +
++    `🇮🇷 <b>دسترسی از ایران</b>\n` +
++    `✅ قابل‌دسترس: <b>${fmtN(irUp)}</b>\n⛔️ غیرقابل‌دسترس: <b>${fmtN(irDown)}</b>\n❔ نامشخص: ${fmtN(irUnknown)}\n` +
++    (panelOk ? "" : `\n⚠️ ارتباط با پنل Virtualizor برقرار نشد؛ وضعیت روشن/خاموش فقط از دیتابیس است.`) +
++    (truncated ? `\nℹ️ فقط ${MAX_PROBE} سرور اول بررسی شد.` : "") +
++    (problems.length ? `\n\n<b>موارد نیازمند بررسی:</b>\n${problems.slice(0, 15).join("\n")}` : "");
++
++  return { text, problems };
++}
++
++/** ارسال گزارش به تاپیک «سرورها»؛ مشکلات جدید به تاپیک «خطا» هم می‌روند */
++export async function sendServerReport(api: Api): Promise<boolean> {
++  if (g.__srvReporting) return false;
++  g.__srvReporting = true;
++  try {
++    const { text, problems } = await buildServerReport();
++    const sent = await report(api, "servers", text);
++    const sig = problems.join("|");
++    const prev = await queryOne<{ value: string }>("SELECT value FROM settings WHERE key='grp_last_problems'");
++    if (sig && sig !== prev?.value) {
++      await report(api, "errors", `🚨 <b>مشکل در سرورها</b>\n🕒 ${stamp()}\n\n${problems.slice(0, 20).join("\n")}`);
++    }
++    if (sig) await query("INSERT INTO settings (key,value) VALUES ('grp_last_problems',$1) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value", [sig]);
++    else await delKV(["grp_last_problems"]);
++    return sent;
++  } finally {
++    g.__srvReporting = false;
++  }
++}
++
++/** از cron صدا زده می‌شود؛ هر N ساعت (پیش‌فرض ۶) یک‌بار، بدون مسدود کردن cron */
++export async function maybeSendServerReport(api: Api, everyHours = 6) {
++  if (!(await getGroup()).chatId) return; // گروه تنظیم نشده
++  const now = Date.now();
++  const claimed = await queryOne(
++    `INSERT INTO settings (key, value) VALUES ('grp_last_servers_report', $1)
++     ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value
++       WHERE settings.value ~ '^[0-9]+$' AND settings.value::bigint < $2
++     RETURNING key`,
++    [String(now), now - everyHours * 3600_000],
++  );
++  if (!claimed) return;
++  void sendServerReport(api).catch((e) => console.error("server report failed", e));
++}
+
+--- a/src/lib/trial.ts	2026-10-30 22:39:58.000000000 +0000
++++ b/src/lib/trial.ts	2026-11-01 17:39:03.246549320 +0000
+@@ -2,29 +2,28 @@
+ import { config } from "./config";
+ import { queryOne, withTx } from "./db";
+ import { deleteServer } from "./provider";
++import { report } from "./adminGroup";
+ 
+ const esc = (s: unknown) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+ const n = (x: number) => x.toLocaleString("en-US");
+ 
+ async function tellAdmins(api: Api, text: string, serviceId?: number) {
++  const extra = serviceId
++    ? {
++        reply_markup: {
++          inline_keyboard: [
++            [
++              { text: "✅ مشکل رفع شد؛ ادامه تمدید", callback_data: `adm:tok:${serviceId}` },
++              { text: "🗑 لغو و بازگشت وجه", callback_data: `adm:tx:${serviceId}` },
++            ],
++          ],
++        },
++      }
++    : {};
++  // اگر گروه مدیریتی تنظیم باشد ← تاپیک «پیگیری»؛ وگرنه پیام خصوصی به ادمین‌ها
++  if (await report(api, "followup", text, extra)) return;
+   for (const id of config.admins) {
+-    await api
+-      .sendMessage(id, text, {
+-        parse_mode: "HTML",
+-        ...(serviceId
+-          ? {
+-              reply_markup: {
+-                inline_keyboard: [
+-                  [
+-                    { text: "✅ مشکل رفع شد؛ ادامه تمدید", callback_data: `adm:tok:${serviceId}` },
+-                    { text: "🗑 لغو و بازگشت وجه", callback_data: `adm:tx:${serviceId}` },
+-                  ],
+-                ],
+-              },
+-            }
+-          : {}),
+-      })
+-      .catch(() => {});
++    await api.sendMessage(id, text, { parse_mode: "HTML", ...extra }).catch(() => {});
+   }
+ }
+ 

@@ -4,6 +4,7 @@ import { config } from "@/lib/config";
 import { query, withTx } from "@/lib/db";
 import { alert, fmt, uid } from "../helpers";
 import { getSettings } from "@/lib/settings";
+import { codes, payerInfo, report, stamp } from "@/lib/adminGroup";
 
 const isAdmin = (ctx: BotContext) => config.admins.includes(uid(ctx));
 
@@ -76,6 +77,15 @@ export function registerAdmin(bot: Bot<BotContext>) {
     if (!out) return alert(ctx, "قبلاً بررسی شده");
     await ctx.editMessageCaption({ caption: `${ctx.callbackQuery.message?.caption ?? ""}\n\n✅ تأیید شد` });
     await ctx.answerCallbackQuery();
+    void (async () =>
+      report(
+        ctx.api,
+        "finance",
+        `✅ <b>واریز تأیید شد</b> — کد <code>${codes.deposit(out.p.id)}</code>\n🕒 ${stamp()}\n` +
+          `💵 مبلغ: <b>${fmt(out.p.amount)}</b> تومان\n${await payerInfo(out.p.user_id)}\n` +
+          `👮 تأییدکننده: <code>${uid(ctx)}</code>` +
+          (out.ref && out.bonus > 0 ? `\n🎁 پورسانت معرف <code>${out.ref}</code>: ${fmt(out.bonus)} تومان` : ""),
+      ))().catch(() => {});
     await ctx.api.sendMessage(out.p.user_id, `✅ حساب شما به مبلغ ${fmt(out.p.amount)} تومان شارژ شد.`).catch(() => {});
     if (out.ref && out.bonus > 0) {
       await ctx.api
@@ -93,6 +103,12 @@ export function registerAdmin(bot: Bot<BotContext>) {
       [pid],
     );
     if (rows.length === 0) return alert(ctx, "قبلاً بررسی شده");
+    void (async () =>
+      report(
+        ctx.api,
+        "finance",
+        `❌ <b>واریز رد شد</b> — کد <code>${codes.deposit(pid)}</code>\n🕒 ${stamp()}\n${await payerInfo(rows[0].user_id)}\n👮 ردکننده: <code>${uid(ctx)}</code>`,
+      ))().catch(() => {});
     await ctx.editMessageCaption({ caption: `${ctx.callbackQuery.message?.caption ?? ""}\n\n❌ رد شد` });
     await ctx.answerCallbackQuery();
     await ctx.api

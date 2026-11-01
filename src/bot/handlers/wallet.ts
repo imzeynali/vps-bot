@@ -7,6 +7,7 @@ import { getState, setState } from "@/lib/state";
 import { esc, fmt, normalizeDigits, show, uid } from "../helpers";
 import { backKb, mainMenu } from "../keyboards";
 import { getSettings } from "@/lib/settings";
+import { codes, payerInfo, reportPhoto, stamp } from "@/lib/adminGroup";
 
 export function registerWallet(bot: Bot<BotContext>) {
   // ── حساب کاربری ───────────────────────────────────────────
@@ -31,7 +32,7 @@ export function registerWallet(bot: Bot<BotContext>) {
 
   // ── پشتیبانی / قوانین ─────────────────────────────────────
   bot.callbackQuery("support", (ctx) =>
-    (async () => show(ctx, `🆘 برای ارتباط با پشتیبانی پیام دهید:\n${esc((await getSettings()).support)}`, backKb()))(),
+    (async () => show(ctx, `🆘 برای ارتباط با پشتیبانی پیام دهید:\n${esc((await getSettings()).support)}`, backKb([["📝 ارسال گزارش به پشتیبانی", "urep"]])))(),
   );
   bot.callbackQuery("terms", (ctx) => show(ctx, TERMS, backKb()));
 
@@ -98,6 +99,15 @@ export function registerWallet(bot: Bot<BotContext>) {
     );
     await setState(id, null);
     await ctx.reply("✅ رسید ثبت شد. پس از تأیید ادمین، حساب شما شارژ می‌شود.", { reply_markup: mainMenu(id) });
+
+    void (async () =>
+      reportPhoto(
+        ctx.api,
+        "finance",
+        fileId,
+        `💳 <b>درخواست واریز</b> — کد <code>${codes.deposit(pay!.id)}</code>\n🕒 ${stamp()}\n` +
+          `💵 مبلغ: <b>${fmt(amount)}</b> تومان\n${await payerInfo(id)}\n⏳ وضعیت: در انتظار تأیید`,
+      ))().catch(() => {});
 
     const kb = new InlineKeyboard().text("✅ تأیید", `payok:${pay!.id}`).text("❌ رد", `payno:${pay!.id}`);
     for (const admin of config.admins) {

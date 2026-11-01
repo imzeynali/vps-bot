@@ -2,6 +2,7 @@ import { Bot } from "grammy";
 import type { BotContext } from "./context";
 import { config } from "@/lib/config";
 import { queryOne } from "@/lib/db";
+import { esc, reportError, stamp } from "@/lib/adminGroup";
 import { registerStart } from "./handlers/start";
 import { registerBuy } from "./handlers/buy";
 import { registerServices } from "./handlers/services";
@@ -10,6 +11,8 @@ import { registerAdmin } from "./handlers/admin";
 import { registerAdminVirt } from "./handlers/adminVirt";
 import { registerAdminCatalog } from "./handlers/adminCatalog";
 import { registerAdminPanel } from "./handlers/adminPanel";
+import { registerAdminGroup } from "./handlers/adminGroup";
+import { registerUserReport } from "./handlers/userReport";
 
 const g = globalThis as unknown as { __bot?: Bot<BotContext> };
 
@@ -35,12 +38,18 @@ function createBot(): Bot<BotContext> {
   registerAdmin(bot);
   registerAdminVirt(bot); // قبل از registerAdminPanel (فالبک adm:*)
   registerAdminCatalog(bot); // پلن/لوکیشن/OS/تنظیمات از داخل پنل ادمین
+  registerAdminGroup(bot); // گروه مدیریتی (قبل از فالبک adm:*)
+  registerUserReport(bot); // گزارش کاربران ← تاپیک پیگیری
   registerAdminPanel(bot); // باید قبل از registerWallet باشد (پیام همگانی)
   registerBuy(bot);
   registerServices(bot);
   registerWallet(bot); // شامل message:text و message:photo؛ آخر ثبت شود
 
-  bot.catch((err) => console.error("bot error:", err.error));
+  bot.catch((err) => {
+    console.error("bot error:", err.error);
+    const m = err.error instanceof Error ? err.error.message : String(err.error);
+    void reportError(bot.api, `🚨 <b>خطای ربات</b>\n🕒 ${stamp()}\n<code>${esc(m).slice(0, 600)}</code>`);
+  });
   return bot;
 }
 

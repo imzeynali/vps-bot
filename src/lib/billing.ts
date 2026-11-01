@@ -2,6 +2,8 @@ import type { Api } from "grammy";
 import { query, withTx } from "./db";
 import { powerAction } from "./provider";
 import { recoverStuck } from "./provisioning";
+import { codes, esc, payerInfo, report, reportError, stamp } from "./adminGroup";
+import { maybeSendServerReport } from "./serverReport";
 
 const n = (x: number) => x.toLocaleString("en-US");
 const TZ = "Asia/Tehran";
@@ -123,6 +125,7 @@ async function warnUpcoming(api: Api) {
 export async function runBilling(api: Api) {
   await recoverStuck(api).catch((e) => console.error("recoverStuck error", e));
   await warnUpcoming(api).catch((e) => console.error("warnUpcoming error", e));
+  await maybeSendServerReport(api).catch((e) => console.error("server report error", e));
 
   const due = await query<{ id: number; mode: string }>(
     `SELECT id, billing_mode AS mode FROM services
@@ -146,6 +149,13 @@ export async function runBilling(api: Api) {
         }
       } else if (r.kind === "m_charged") {
         charged++;
+        void (async () =>
+          report(
+            api,
+            "finance",
+            `${r.wasTrial ? "✅ <b>پایان تست و کسر مابقی (ماهانه)</b>" : "🔁 <b>تمدید سرویس ماهانه</b>"} — کد <code>${codes.renew(r.serviceId)}</code>\n🕒 ${stamp()}\n` +
+              `🖥 سرور #${r.serviceId}\n💵 کسر شده: <b>${n(r.amount)}</b> تومان\n${await payerInfo(r.userId)}`,
+          ))().catch(() => {});
         await api
           .sendMessage(
             r.userId,
@@ -156,13 +166,21 @@ export async function runBilling(api: Api) {
           .catch(() => {});
       } else if (r.kind === "suspended" || r.kind === "m_suspended") {
         suspended++;
-        await powerAction(r.serviceId, "off").catch(() => {});
+        void report(
+          api,
+          "servers",
+          `⏸ <b>سرور متوقف شد (کمبود موجودی)</b>\n🕒 ${stamp()}\n🖥 #${r.serviceId} | 👤 کاربر: <code>${r.userId}</code>`,
+        );
+        await powerAction(r.serviceId, "off").catch((e) =>
+          reportError(api, `🚨 <b>خاموش کردن سرور #${r.serviceId} در پنل ناموفق بود</b>\n<code>${esc(e instanceof Error ? e.message : e).slice(0, 400)}</code>`),
+        );
         await api
           .sendMessage(r.userId, `🔴 به دلیل کمبود موجودی، سرور #${r.serviceId} خاموش و متوقف شد.`)
           .catch(() => {});
       }
     } catch (e) {
       console.error("billing error for service", id, e);
+      void reportError(api, `🚨 <b>خطا در صورتحساب سرویس #${id}</b>\n🕒 ${stamp()}\n<code>${esc(e instanceof Error ? e.message : e).slice(0, 400)}</code>`);
     }
   }
   return { due: due.length, charged, suspended };

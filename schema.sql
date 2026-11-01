@@ -121,3 +121,10 @@ SELECT * FROM (VALUES
     ('طلایی', 4, 8, 100, 1800)
 ) AS v(name, cpu, ram_gb, disk_gb, hourly_price)
 WHERE NOT EXISTS (SELECT 1 FROM plans);
+
+-- گزارش‌های کاربران (تاپیک «پیگیری» در گروه مدیریتی)
+CREATE TABLE IF NOT EXISTS user_reports (
+    id         SERIAL PRIMARY KEY,
+    user_id    BIGINT NOT NULL REFERENCES users(id),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

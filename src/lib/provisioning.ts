@@ -1,9 +1,9 @@
 import type { Api } from "grammy";
-import { config } from "./config";
 import { query, queryOne, withTx } from "./db";
 import { hostnameFor, provisionServer } from "./provider";
 import * as V from "./virtualizor";
 import { getSettings } from "./settings";
+import { codes, payerInfo, report, reportError, stamp } from "./adminGroup";
 
 const esc = (s: unknown) =>
   String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -16,8 +16,9 @@ async function tell(api: Api, userId: number, text: string, kb = true) {
     .catch(() => {});
 }
 
+/** خطاها ← تاپیک «خطا» در گروه مدیریتی (اگر گروه نباشد، پیام خصوصی به ادمین‌ها) */
 async function tellAdmins(api: Api, text: string) {
-  for (const id of config.admins) await api.sendMessage(id, text, { parse_mode: "HTML" }).catch(() => {});
+  await reportError(api, text);
 }
 
 interface Cred {
@@ -59,6 +60,11 @@ async function activate(api: Api, serviceId: number, vpsId: number, ip: string |
   );
   if (!row) return false;
   await tell(api, row.user_id, credentials(row));
+  void report(
+    api,
+    "servers",
+    `🆕 <b>سرور جدید ساخته شد</b>\n🕒 ${stamp()}\n🖥 #${row.id} | 🌐 <code>${esc(row.ip ?? "در حال تخصیص")}</code> | ${row.billing_mode === "monthly" ? "ماهانه" : "ساعتی"}\n👤 کاربر: <code>${row.user_id}</code>`,
+  );
   return true;
 }
 
@@ -78,6 +84,13 @@ async function refund(api: Api, serviceId: number, reason: string) {
     return s;
   });
   if (!r) return;
+  void (async () =>
+    report(
+      api,
+      "finance",
+      `↩️ <b>بازگشت وجه (ساخت ناموفق)</b> — کد <code>${codes.refund(serviceId)}</code>\n🕒 ${stamp()}\n` +
+        `🖥 سرور #${serviceId}\n💵 مبلغ: <b>${r.amount.toLocaleString("en-US")}</b> تومان\n${await payerInfo(r.user_id)}`,
+    ))().catch(() => {});
   await tell(
     api,
     r.user_id,

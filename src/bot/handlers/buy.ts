@@ -9,6 +9,7 @@ import type { Plan } from "@/lib/types";
 import { alert, esc, fmt, planButton, show, specText, uid } from "../helpers";
 import { backKb } from "../keyboards";
 import { getSettings } from "@/lib/settings";
+import { codes, payerInfo, report, stamp } from "@/lib/adminGroup";
 
 interface Loc {
   key: string;
@@ -125,6 +126,15 @@ export function registerBuy(bot: Bot<BotContext>) {
       },
     );
     if ("error" in result) return alert(ctx, result.error);
+
+    void (async () =>
+      report(
+        ctx.api,
+        "finance",
+        `🛒 <b>خرید سرویس</b> — کد <code>${codes.buy(result.sid)}</code>\n🕒 ${stamp()}\n` +
+          `🖥 سرور #${result.sid} | ${mode === "monthly" ? "🗓 ماهانه (هزینه‌ی روز تست)" : "⏰ ساعتی"}\n` +
+          `💵 کسر شده: <b>${fmt(result.charged)}</b> تومان\n${await payerInfo(uid(ctx))}`,
+      ))().catch(() => {});
 
     // ۲) ساخت در پس‌زمینه (ممکن است چند ده ثانیه طول بکشد)
     void startProvisioning(ctx.api, result.sid);
