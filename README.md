@@ -4,7 +4,7 @@
 روی سرور (با کاربر root) فقط یک دستور بزنید و مراحل منوی انگلیسی را دنبال کنید
 (`OWNER/REPO` را با آدرس گیت‌هاب خودتان عوض کنید):
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/imzeynali/vps-bot/main/install.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/OWNER/REPO/main/install.sh)
 ```
 اگر با `sudo` اجرا می‌کنید این فرم مطمئن‌تر است:
 ```bash

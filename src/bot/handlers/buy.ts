@@ -10,6 +10,7 @@ import { alert, esc, fmt, planButton, show, specText, uid } from "../helpers";
 import { backKb } from "../keyboards";
 import { getSettings } from "@/lib/settings";
 import { codes, payerInfo, report, stamp } from "@/lib/adminGroup";
+import { DATACENTERS, getDatacenter } from "@/lib/datacenters";
 
 interface Loc {
   key: string;
@@ -27,18 +28,28 @@ const getOs = (key: string) => queryOne<Os>("SELECT key, name FROM os_templates 
 // مراحل: لوکیشن ← سیستم‌عامل ← (بررسی موجودی) ← پلن ← تأیید و ساخت
 export function registerBuy(bot: Bot<BotContext>) {
   bot.callbackQuery("buy", async (ctx) => {
+    // لوکیشن‌های ایران (Virtualizor) از دیتابیس؛ «بین‌الملل» همیشه هست و به Virtualizor ربطی ندارد
     const locs = await query<Loc>("SELECT key, title FROM locations WHERE active ORDER BY key");
-    if (locs.length === 0) {
-      return show(
-        ctx,
-        "⚠️ در حال حاضر امکان خرید وجود ندارد (لوکیشنی تعریف نشده). با پشتیبانی تماس بگیرید.",
-        backKb([]),
-      );
-    }
     const kb = new InlineKeyboard();
     for (const l of locs) kb.text(l.title, `loc:${l.key}`).row();
+    kb.text("🌍 بین‌الملل", "intl").row();
     kb.text("🔙 منوی اصلی", "home");
     await show(ctx, "🌍 <b>لوکیشن سرور را انتخاب کنید:</b>", kb);
+  });
+
+  // ── بین‌الملل: انتخاب دیتاسنتر (مستقل از Virtualizor) ──
+  bot.callbackQuery("intl", async (ctx) => {
+    const kb = new InlineKeyboard();
+    for (const d of DATACENTERS) kb.text(d.title, `dc:${d.key}`).row();
+    kb.text("⬅️ بازگشت", "buy");
+    await show(ctx, "دیتاسنتر مورد نظر خود را انتخاب کنید:", kb);
+  });
+
+  bot.callbackQuery(/^dc:(\w+)$/, async (ctx) => {
+    const dc = getDatacenter(ctx.match[1]);
+    if (!dc) return alert(ctx, "دیتاسنتر نامعتبر");
+    // TODO: اتصال API هر دیتاسنتر (مراحل بعدی)
+    return alert(ctx, `دیتاسنتر ${dc.title} به‌زودی فعال می‌شود.`);
   });
 
   bot.callbackQuery(/^loc:(\w+)$/, async (ctx) => {

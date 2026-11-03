@@ -128,3 +128,8 @@ CREATE TABLE IF NOT EXISTS user_reports (
     user_id    BIGINT NOT NULL REFERENCES users(id),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- لوکیشن پیش‌فرض «ایران» (Virtualizor master)؛ فقط اگر هیچ لوکیشنی تعریف نشده باشد
+INSERT INTO locations (key, title, serid)
+SELECT 'iran', '🇮🇷 ایران', 0
+WHERE NOT EXISTS (SELECT 1 FROM locations);
