@@ -1,3 +1,4 @@
+import { getDatacenter, isEnabled } from "@/datacenters";
 import { getSettings } from "./settings";
 import { withTx } from "./db";
 import { genPassword } from "./provider";
@@ -27,10 +28,16 @@ export async function purchaseService(i: {
 }): Promise<PurchaseResult> {
   return withTx<PurchaseResult>(async (c) => {
     const p = (await c.query<Plan>("SELECT * FROM plans WHERE id=$1 AND active", [i.planId])).rows[0];
-    const loc = (await c.query<{ key: string; title: string }>("SELECT key, title FROM locations WHERE key=$1 AND active", [i.locKey])).rows[0];
-    const os = (await c.query<{ key: string; name: string }>("SELECT key, name FROM os_templates WHERE key=$1 AND active", [i.osKey])).rows[0];
+    const loc = (await c.query<{ key: string; title: string; datacenter: string }>("SELECT key, title, datacenter FROM locations WHERE key=$1 AND active", [i.locKey])).rows[0];
+    const os = (await c.query<{ key: string; name: string; datacenter: string }>("SELECT key, name, datacenter FROM os_templates WHERE key=$1 AND active", [i.osKey])).rows[0];
     const u = (await c.query<{ balance: number }>("SELECT balance FROM users WHERE id=$1 FOR UPDATE", [i.userId])).rows[0];
     if (!p || !loc || !os || !u) return { error: "❌ خطا در ثبت سفارش" };
+
+    // ── جداسازی دیتاسنتر: لوکیشن، سیستم‌عامل و پلن باید متعلق به یک دیتاسنتر باشند ──
+    if (p.datacenter !== loc.datacenter || os.datacenter !== loc.datacenter) return { error: "❌ انتخاب نامعتبر (ناسازگاری دیتاسنتر)" };
+    const dc = getDatacenter(loc.datacenter);
+    if (!dc || !dc.implemented) return { error: "❌ این دیتاسنتر هنوز فعال نشده است." };
+    if (!(await isEnabled(dc.id))) return { error: "❌ خرید در این دیتاسنتر موقتاً غیرفعال است." };
 
     let charge = p.hourly_price;
     if (i.mode === "monthly") {
@@ -48,12 +55,12 @@ export async function purchaseService(i: {
     const sid = (
       await c.query<{ id: number }>(
         `INSERT INTO services (user_id, plan_id, hourly_price, location, os, location_key, os_key,
-                               status, login_user, login_pass, panel_pass, billing_mode, monthly_price, initial_charge)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,'provisioning','root',$8,$9,$10,$11,$12) RETURNING id`,
+                               status, login_user, login_pass, panel_pass, billing_mode, monthly_price, initial_charge, datacenter)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,'provisioning','root',$8,$9,$10,$11,$12,$13) RETURNING id`,
         [
           i.userId, p.id, p.hourly_price, loc.title, os.name, loc.key, os.key,
           genPassword(), genPassword(),
-          i.mode, i.mode === "monthly" ? p.monthly_price : null, charge,
+          i.mode, i.mode === "monthly" ? p.monthly_price : null, charge, loc.datacenter,
         ],
       )
     ).rows[0].id;

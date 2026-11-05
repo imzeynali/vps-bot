@@ -11,7 +11,9 @@
     "webhook": "tsx --env-file=.env.local scripts/set-webhook.ts",
     "test:virt": "tsx --env-file=.env.local test/e2e.ts",
     "virt:discover": "tsx --env-file=.env.local scripts/virt-discover.ts",
-    "test:admin": "tsx --env-file=.env.local test/admin-ui.ts"
+    "test:admin": "tsx --env-file=.env.local test/admin-ui.ts",
+    "test:dc": "tsx --env-file=.env.local test/datacenters.ts",
+    "test": "npm run test:virt && npm run test:admin && npm run test:dc"
   },
   "dependencies": {
     "grammy": "^1.30.0",

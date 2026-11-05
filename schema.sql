@@ -133,3 +133,10 @@ CREATE TABLE IF NOT EXISTS user_reports (
 INSERT INTO locations (key, title, serid)
 SELECT 'iran', '🇮🇷 ایران', 0
 WHERE NOT EXISTS (SELECT 1 FROM locations);
+
+-- ── جداسازی دیتاسنترها (هر ردیف متعلق به یک دیتاسنتر است؛ پیش‌فرض = virtualizor/ایران) ──
+ALTER TABLE services     ADD COLUMN IF NOT EXISTS datacenter TEXT NOT NULL DEFAULT 'virtualizor';
+ALTER TABLE plans        ADD COLUMN IF NOT EXISTS datacenter TEXT NOT NULL DEFAULT 'virtualizor';
+ALTER TABLE locations    ADD COLUMN IF NOT EXISTS datacenter TEXT NOT NULL DEFAULT 'virtualizor';
+ALTER TABLE os_templates ADD COLUMN IF NOT EXISTS datacenter TEXT NOT NULL DEFAULT 'virtualizor';
+CREATE INDEX IF NOT EXISTS idx_services_dc ON services(datacenter);

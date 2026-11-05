@@ -1,7 +1,8 @@
 import type { Api } from "grammy";
 import { query, queryOne, withTx } from "./db";
-import { hostnameFor, provisionServer } from "./provider";
-import * as V from "./virtualizor";
+import { findExisting, isDefinitiveFailure, provisionServer, removeOrphan } from "./provider";
+import { datacenterOfError } from "@/core/errors";
+import { getDatacenter } from "@/datacenters";
 import { getSettings } from "./settings";
 import { codes, payerInfo, report, reportError, stamp } from "./adminGroup";
 
@@ -106,13 +107,17 @@ export async function startProvisioning(api: Api, serviceId: number): Promise<vo
     const ok = await activate(api, serviceId, r.vpsId, r.ip);
     if (!ok) {
       // در این فاصله سرویس لغو/برگشت خورده؛ VPS یتیم را پاک کن
-      await V.deleteVps(r.vpsId).catch((e) => console.error("orphan cleanup failed", serviceId, e));
+      await removeOrphan(serviceId, r.vpsId).catch((e) => console.error("orphan cleanup failed", serviceId, e));
     }
   } catch (e) {
     console.error("provisioning failed", serviceId, e);
     const msg = e instanceof Error ? e.message : String(e);
-    await tellAdmins(api, `⚠️ <b>خطا در ساخت سرور #${serviceId}</b>\n<code>${esc(msg).slice(0, 600)}</code>`);
-    if (e instanceof V.VirtError && e.kind === "panel") {
+    const dcTitle = getDatacenter(datacenterOfError(e) ?? "")?.title;
+    await tellAdmins(
+      api,
+      `⚠️ <b>خطا در ساخت سرور #${serviceId}</b>${dcTitle ? `\n🌐 دیتاسنتر: ${esc(dcTitle)}` : ""}\n<code>${esc(msg).slice(0, 600)}</code>`,
+    );
+    if (await isDefinitiveFailure(serviceId, e).catch(() => false)) {
       await refund(api, serviceId, msg);
     } else {
       // نتیجه نامشخص (timeout/قطع اتصال): ممکن است VPS ساخته شده باشد؛ recoverStuck بررسی می‌کند
@@ -123,14 +128,16 @@ export async function startProvisioning(api: Api, serviceId: number): Promise<vo
 
 /** سرویس‌هایی که بیش از ۱۰ دقیقه در provisioning مانده‌اند: اگر روی پنل هستند فعال، وگرنه برگشت پول */
 export async function recoverStuck(api: Api): Promise<void> {
-  if (!V.isConfigured()) return;
-  const stuck = await query<{ id: number }>(
-    `SELECT id FROM services WHERE status='provisioning' AND created_at < now() - interval '10 minutes' ORDER BY id LIMIT 20`,
+  const stuck = await query<{ id: number; datacenter: string }>(
+    `SELECT id, datacenter FROM services WHERE status='provisioning' AND created_at < now() - interval '10 minutes' ORDER BY id LIMIT 20`,
   );
-  for (const { id } of stuck) {
+  for (const { id, datacenter } of stuck) {
+    // هر دیتاسنتر مستقل بازیابی می‌شود؛ دیتاسنترِ غیرقابل‌دسترس فقط خودش را عقب می‌اندازد
+    const dc = getDatacenter(datacenter);
+    if (!dc || !dc.implemented || !dc.isConfigured()) continue;
     try {
-      const vps = await V.findByHostname(hostnameFor(id));
-      if (vps) await activate(api, id, vps.vpsid, vps.ips[0] ?? null);
+      const found = await findExisting(id);
+      if (found) await activate(api, id, found.vpsId, found.ip);
       else await refund(api, id, "ساخت سرور کامل نشد (timeout)");
     } catch (e) {
       console.error("recoverStuck skipped", id, e instanceof Error ? e.message : e); // پنل در دسترس نیست؛ دور بعد

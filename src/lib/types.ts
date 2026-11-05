@@ -9,6 +9,7 @@ export interface Plan {
   monthly_price: number | null;
   active: boolean;
   virt_plid: number | null;
+  datacenter: string;
 }
 
 export interface ServiceRow {

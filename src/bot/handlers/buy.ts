@@ -10,29 +10,37 @@ import { alert, esc, fmt, planButton, show, specText, uid } from "../helpers";
 import { backKb } from "../keyboards";
 import { getSettings } from "@/lib/settings";
 import { codes, payerInfo, report, stamp } from "@/lib/adminGroup";
-import { DATACENTERS, getDatacenter } from "@/lib/datacenters";
+import { getDatacenter, isEnabled, isPurchasable, listDatacenters } from "@/datacenters";
 
 interface Loc {
   key: string;
   title: string;
+  datacenter: string;
 }
 interface Os {
   key: string;
   name: string;
+  datacenter: string;
 }
 
 const getLoc = (key: string) =>
-  queryOne<Loc>("SELECT key, title FROM locations WHERE key=$1 AND active", [key]);
-const getOs = (key: string) => queryOne<Os>("SELECT key, name FROM os_templates WHERE key=$1 AND active", [key]);
+  queryOne<Loc>("SELECT key, title, datacenter FROM locations WHERE key=$1 AND active", [key]);
+const getOs = (key: string) =>
+  queryOne<Os>("SELECT key, name, datacenter FROM os_templates WHERE key=$1 AND active", [key]);
 
 // مراحل: لوکیشن ← سیستم‌عامل ← (بررسی موجودی) ← پلن ← تأیید و ساخت
 export function registerBuy(bot: Bot<BotContext>) {
   bot.callbackQuery("buy", async (ctx) => {
-    // لوکیشن‌های ایران (Virtualizor) از دیتابیس؛ «بین‌الملل» همیشه هست و به Virtualizor ربطی ندارد
-    const locs = await query<Loc>("SELECT key, title FROM locations WHERE active ORDER BY key");
+    // ایران: لوکیشن‌های دیتاسنتر Virtualizor؛ بین‌الملل: انتخاب دیتاسنتر (هرکدام مستقل)
     const kb = new InlineKeyboard();
-    for (const l of locs) kb.text(l.title, `loc:${l.key}`).row();
-    kb.text("🌍 بین‌الملل", "intl").row();
+    for (const dc of listDatacenters("ir")) {
+      if (!(await isEnabled(dc.id))) continue;
+      const locs = await query<Loc>("SELECT key, title, datacenter FROM locations WHERE active AND datacenter=$1 ORDER BY key", [dc.id]);
+      for (const l of locs) kb.text(l.title, `loc:${l.key}`).row();
+    }
+    let hasIntl = false;
+    for (const dc of listDatacenters("intl")) if (await isEnabled(dc.id)) hasIntl = true;
+    if (hasIntl) kb.text("🌍 بین‌الملل", "intl").row();
     kb.text("🔙 منوی اصلی", "home");
     await show(ctx, "🌍 <b>لوکیشن سرور را انتخاب کنید:</b>", kb);
   });
@@ -40,22 +48,28 @@ export function registerBuy(bot: Bot<BotContext>) {
   // ── بین‌الملل: انتخاب دیتاسنتر (مستقل از Virtualizor) ──
   bot.callbackQuery("intl", async (ctx) => {
     const kb = new InlineKeyboard();
-    for (const d of DATACENTERS) kb.text(d.title, `dc:${d.key}`).row();
+    for (const d of listDatacenters("intl")) if (await isEnabled(d.id)) kb.text(d.title, `dc:${d.id}`).row();
     kb.text("⬅️ بازگشت", "buy");
     await show(ctx, "دیتاسنتر مورد نظر خود را انتخاب کنید:", kb);
   });
 
   bot.callbackQuery(/^dc:(\w+)$/, async (ctx) => {
     const dc = getDatacenter(ctx.match[1]);
-    if (!dc) return alert(ctx, "دیتاسنتر نامعتبر");
-    // TODO: اتصال API هر دیتاسنتر (مراحل بعدی)
-    return alert(ctx, `دیتاسنتر ${dc.title} به‌زودی فعال می‌شود.`);
+    if (!dc || !(await isEnabled(dc.id))) return alert(ctx, "دیتاسنتر نامعتبر");
+    if (!(await isPurchasable(dc))) return alert(ctx, `دیتاسنتر ${dc.title} به‌زودی فعال می‌شود.`);
+    // دیتاسنتر آماده: لوکیشن‌های همان دیتاسنتر ← همان جریان استاندارد (سیستم‌عامل ← پلن ← خرید)
+    const locs = await query<Loc>("SELECT key, title, datacenter FROM locations WHERE active AND datacenter=$1 ORDER BY key", [dc.id]);
+    if (locs.length === 0) return alert(ctx, `برای ${dc.title} هنوز لوکیشنی تعریف نشده است.`);
+    const kb = new InlineKeyboard();
+    for (const l of locs) kb.text(l.title, `loc:${l.key}`).row();
+    kb.text("⬅️ بازگشت", "intl");
+    await show(ctx, `🌍 <b>${esc(dc.title)}</b>\n\nلوکیشن را انتخاب کنید:`, kb);
   });
 
   bot.callbackQuery(/^loc:(\w+)$/, async (ctx) => {
     const loc = await getLoc(ctx.match[1]);
     if (!loc) return alert(ctx, "لوکیشن نامعتبر");
-    const oses = await query<Os>("SELECT key, name FROM os_templates WHERE active ORDER BY name");
+    const oses = await query<Os>("SELECT key, name, datacenter FROM os_templates WHERE active AND datacenter=$1 ORDER BY name", [loc.datacenter]);
     if (oses.length === 0) return alert(ctx, "هنوز سیستم‌عاملی تعریف نشده است.");
     const kb = new InlineKeyboard();
     for (const o of oses) kb.text(`🐧 ${o.name}`, `os:${loc.key}:${o.key}`).row();
@@ -66,7 +80,7 @@ export function registerBuy(bot: Bot<BotContext>) {
   bot.callbackQuery(/^os:(\w+):(\w+)$/, async (ctx) => {
     const [, lk, ok] = ctx.match;
     const [loc, os] = await Promise.all([getLoc(lk), getOs(ok)]);
-    if (!loc || !os) return alert(ctx, "انتخاب نامعتبر");
+    if (!loc || !os || os.datacenter !== loc.datacenter) return alert(ctx, "انتخاب نامعتبر");
 
     const u = await queryOne<{ balance: number }>("SELECT balance FROM users WHERE id=$1", [uid(ctx)]);
     const balance = u?.balance ?? 0;
@@ -78,7 +92,7 @@ export function registerBuy(bot: Bot<BotContext>) {
       );
     }
 
-    const plans = await query<Plan>("SELECT * FROM plans WHERE active AND hourly_price > 0 ORDER BY hourly_price");
+    const plans = await query<Plan>("SELECT * FROM plans WHERE active AND hourly_price > 0 AND datacenter=$1 ORDER BY hourly_price", [loc.datacenter]);
     if (plans.length === 0) return alert(ctx, "هنوز پلنی برای فروش فعال نشده است.");
     const kb = new InlineKeyboard();
     for (const p of plans) {
@@ -103,7 +117,7 @@ export function registerBuy(bot: Bot<BotContext>) {
       getLoc(lk),
       getOs(ok),
     ]);
-    if (!p || !loc || !os) return alert(ctx, "پلن یافت نشد");
+    if (!p || !loc || !os || p.datacenter !== loc.datacenter || os.datacenter !== loc.datacenter) return alert(ctx, "پلن یافت نشد");
     let text =
       `🖥 <b>${esc(p.name)}</b>\n\n` +
       `⚙️ مشخصات: ${specText(p)}\n` +

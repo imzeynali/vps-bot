@@ -156,7 +156,10 @@ export function registerServices(bot: Bot<BotContext>) {
   bot.callbackQuery(/^rb:(\d+)$/, async (ctx) => {
     const id = Number(ctx.match[1]);
     if (!(await getOwnActive(uid(ctx), id))) return alert(ctx, "این سرور فعال نیست یا یافت نشد.");
-    const oses = await query<{ key: string; name: string }>("SELECT key, name FROM os_templates WHERE active ORDER BY name");
+    const oses = await query<{ key: string; name: string }>(
+      "SELECT key, name FROM os_templates WHERE active AND datacenter=(SELECT datacenter FROM services WHERE id=$1) ORDER BY name",
+      [id],
+    );
     if (oses.length === 0) return alert(ctx, "سیستم‌عاملی تعریف نشده است.");
     const kb = new InlineKeyboard();
     for (const o of oses) kb.text(`🐧 ${o.name}`, `rbo:${id}:${o.key}`).row();
@@ -166,7 +169,10 @@ export function registerServices(bot: Bot<BotContext>) {
 
   bot.callbackQuery(/^rbo:(\d+):(\w+)$/, async (ctx) => {
     const [, id, osKey] = ctx.match;
-    const os = await queryOne<{ name: string }>("SELECT name FROM os_templates WHERE key=$1 AND active", [osKey]);
+    const os = await queryOne<{ name: string }>(
+      "SELECT name FROM os_templates WHERE key=$1 AND active AND datacenter=(SELECT datacenter FROM services WHERE id=$2)",
+      [osKey, Number(id)],
+    );
     if (!os) return alert(ctx, "سیستم‌عامل نامعتبر");
     if (!(await getOwnActive(uid(ctx), Number(id)))) return alert(ctx, "این سرور فعال نیست یا یافت نشد.");
     const kb = new InlineKeyboard()
@@ -183,7 +189,10 @@ export function registerServices(bot: Bot<BotContext>) {
   bot.callbackQuery(/^rbc:(\d+):(\w+)$/, async (ctx) => {
     const [, idStr, osKey] = ctx.match;
     const id = Number(idStr);
-    const os = await queryOne<{ name: string }>("SELECT name FROM os_templates WHERE key=$1 AND active", [osKey]);
+    const os = await queryOne<{ name: string }>(
+      "SELECT name FROM os_templates WHERE key=$1 AND active AND datacenter=(SELECT datacenter FROM services WHERE id=$2)",
+      [osKey, Number(id)],
+    );
     if (!os) return alert(ctx, "سیستم‌عامل نامعتبر");
     if (!(await getOwnActive(uid(ctx), id))) return alert(ctx, "این سرور فعال نیست یا یافت نشد.");
 

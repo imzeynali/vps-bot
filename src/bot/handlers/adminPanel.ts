@@ -27,6 +27,7 @@ const panelKb = () =>
     .row()
     .text("🛍 مدیریت فروش و کاتالوگ", "adm:cat")
     .row()
+    .text("🌐 دیتاسنترها", "adm:dc")
     .text("👥 تنظیم گروه مدیریتی", "adm:grp")
     .row()
     .text("⚙️ تنظیمات ربات", "adm:set")

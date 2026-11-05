@@ -12,6 +12,7 @@ import { registerAdminVirt } from "./handlers/adminVirt";
 import { registerAdminCatalog } from "./handlers/adminCatalog";
 import { registerAdminPanel } from "./handlers/adminPanel";
 import { registerAdminGroup } from "./handlers/adminGroup";
+import { registerAdminDatacenters } from "./handlers/adminDatacenters";
 import { registerUserReport } from "./handlers/userReport";
 
 const g = globalThis as unknown as { __bot?: Bot<BotContext> };
@@ -38,6 +39,7 @@ function createBot(): Bot<BotContext> {
   registerAdmin(bot);
   registerAdminVirt(bot); // قبل از registerAdminPanel (فالبک adm:*)
   registerAdminCatalog(bot); // پلن/لوکیشن/OS/تنظیمات از داخل پنل ادمین
+  registerAdminDatacenters(bot); // مدیریت دیتاسنترها (قبل از فالبک adm:*)
   registerAdminGroup(bot); // گروه مدیریتی (قبل از فالبک adm:*)
   registerUserReport(bot); // گزارش کاربران ← تاپیک پیگیری
   registerAdminPanel(bot); // باید قبل از registerWallet باشد (پیام همگانی)
