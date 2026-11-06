@@ -40,9 +40,15 @@ export const config = {
   },
   // ── دیتاسنتر CGI (بین‌الملل) — API هنوز متصل نشده؛ مقادیر بعداً تکمیل می‌شود ──
   cgi: {
-    url: (process.env.CGI_API_URL ?? "").trim().replace(/\/+$/, ""),
-    apiKey: process.env.CGI_API_KEY ?? "",
-    timeoutMs: num(process.env.CGI_TIMEOUT_MS, 60000),
+    authUrl: (process.env.CGI_AUTH_URL ?? "").trim().replace(/\/+$/, ""), // …/identity/v3
+    credId: (process.env.CGI_APP_CRED_ID ?? "").trim(),
+    credSecret: process.env.CGI_APP_CRED_SECRET ?? "",
+    region: (process.env.CGI_REGION ?? "eu-north3").trim(),
+    securityGroup: (process.env.CGI_SECURITY_GROUP ?? "allow_all").trim(), // نام گروه امنیتی (ورودی/خروجی باز)
+    novaVersion: (process.env.CGI_NOVA_MICROVERSION ?? "2.79").trim(),
+    timeoutMs: num(process.env.CGI_TIMEOUT_MS, 30000),
+    buildTimeoutMs: num(process.env.CGI_BUILD_TIMEOUT_MS, 240000), // سقف انتظار تا ACTIVE شدن سرور
+    pollMs: num(process.env.CGI_POLL_MS, 3000), // فاصله‌ی پولینگ وضعیت
   },
   // دامنه‌ی hostname سرورها: s<ID>.<vpsDomain>
   vpsDomain: (process.env.VPS_DOMAIN || hostOf(process.env.APP_URL) || "vps.local").toLowerCase(),

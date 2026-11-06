@@ -37,7 +37,7 @@ async function main() {
     assert.throws(() => DC.registerDatacenter(DC.getDatacenter("cgi")!), /تکراری/);
   });
 
-  t("CGI هنوز قابل خرید نیست ولی Virtualizor هست", async () => {
+  t("CGI بدون تنظیمات قابل خرید نیست ولی Virtualizor هست", async () => {
     assert.equal(await DC.isPurchasable(DC.getDatacenter("cgi")!), false);
     assert.equal(await DC.isPurchasable(DC.getDatacenter("virtualizor")!), true);
   });
@@ -62,7 +62,7 @@ async function main() {
     irSid = (r as { sid: number }).sid;
     assert.equal((await queryOne<{ datacenter: string }>("SELECT datacenter FROM services WHERE id=$1", [irSid]))!.datacenter, "virtualizor");
     const res = await P.provisionServer(irSid);
-    assert.ok(res.vpsId > 0);
+    assert.ok(res.vpsId! > 0);
     await query("UPDATE services SET vps_id=$1, ip=$2, status='active' WHERE id=$3", [res.vpsId, res.ip, irSid]); // کاری که activate() می‌کند
   });
 

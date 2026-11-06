@@ -140,3 +140,10 @@ ALTER TABLE plans        ADD COLUMN IF NOT EXISTS datacenter TEXT NOT NULL DEFAU
 ALTER TABLE locations    ADD COLUMN IF NOT EXISTS datacenter TEXT NOT NULL DEFAULT 'virtualizor';
 ALTER TABLE os_templates ADD COLUMN IF NOT EXISTS datacenter TEXT NOT NULL DEFAULT 'virtualizor';
 CREATE INDEX IF NOT EXISTS idx_services_dc ON services(datacenter);
+
+-- ── دیتاسنترهای مبتنی بر شناسه‌ی متنی (OpenStack/CGI): شناسه‌ی خارجی سرور، فلور/ایمیج/ریجن ──
+ALTER TABLE services     ADD COLUMN IF NOT EXISTS external_id TEXT;                          -- UUID سرور در دیتاسنتر
+ALTER TABLE services     ADD COLUMN IF NOT EXISTS dc_meta JSONB NOT NULL DEFAULT '{}'::jsonb; -- مثلاً port_id/network_id
+ALTER TABLE plans        ADD COLUMN IF NOT EXISTS dc_ref TEXT;                              -- Flavor ID
+ALTER TABLE os_templates ADD COLUMN IF NOT EXISTS dc_ref TEXT;                              -- Image ID
+ALTER TABLE locations    ADD COLUMN IF NOT EXISTS dc_ref TEXT;                              -- نام Region

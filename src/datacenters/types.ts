@@ -7,8 +7,13 @@ export type Region = "ir" | "intl";
 export type PowerAction = "on" | "off" | "reboot";
 
 export interface ProvisionResult {
-  vpsId: number;
+  /** شناسه‌ی عددی (Virtualizor). دیتاسنترهای با شناسه‌ی متنی null می‌گذارند. */
+  vpsId: number | null;
+  /** شناسه‌ی متنی سرور در دیتاسنتر (مثلاً UUID در OpenStack) */
+  externalId?: string;
   ip: string | null;
+  /** داده‌ی کمکی دیتاسنتر که باید ذخیره شود (مثلاً port_id) */
+  meta?: Record<string, unknown>;
 }
 
 export interface HealthResult {
@@ -43,7 +48,7 @@ export interface DatacenterProvider {
   /** خطای ساخت «قطعی» است (یعنی هیچ سروری ساخته نشده ← بازگشت وجه)؟ false = نتیجه نامشخص (timeout/قطع اتصال) */
   isDefinitiveFailure(e: unknown): boolean;
   /** سرور یتیم (ساخته‌شده ولی سرویس لغو شده) را حذف می‌کند */
-  removeOrphan(vpsId: number): Promise<void>;
+  removeOrphan(res: ProvisionResult): Promise<void>;
   /** سرویسِ گیرکرده در provisioning: اگر سرور از قبل ساخته شده باشد پیدایش می‌کند، وگرنه null */
   findExisting(serviceId: number): Promise<ProvisionResult | null>;
 }

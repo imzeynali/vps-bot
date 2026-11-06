@@ -31,7 +31,7 @@ async function run<T>(serviceId: number, fn: (p: DatacenterProvider) => Promise<
 
 export const provisionServer = (serviceId: number) =>
   run(serviceId, async (p) => {
-    if (!p.implemented) throw new NotReadyError(p.id, `دیتاسنتر ${p.title} هنوز فعال نشده است`);
+    if (!p.implemented || !p.isConfigured()) throw new NotReadyError(p.id, `دیتاسنتر ${p.title} هنوز فعال نشده است`);
     return p.provision(serviceId);
   });
 export const powerAction = (serviceId: number, action: PowerAction) => run(serviceId, (p) => p.power(serviceId, action));
@@ -41,7 +41,7 @@ export async function isDefinitiveFailure(serviceId: number, e: unknown): Promis
   if (e instanceof NotReadyError) return true;
   return (await dcOf(serviceId)).isDefinitiveFailure(e);
 }
-export const removeOrphan = (serviceId: number, vpsId: number) => run(serviceId, (p) => p.removeOrphan(vpsId));
+export const removeOrphan = (serviceId: number, res: ProvisionResult) => run(serviceId, (p) => p.removeOrphan(res));
 export const findExisting = (serviceId: number) => run(serviceId, (p) => p.findExisting(serviceId));
 export const deleteServer = (serviceId: number) => run(serviceId, (p) => p.remove(serviceId));
 export const refreshIp = (serviceId: number) => run(serviceId, (p) => p.refreshIp(serviceId));

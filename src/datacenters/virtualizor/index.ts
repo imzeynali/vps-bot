@@ -27,7 +27,9 @@ export const virtualizorDatacenter: DatacenterProvider = {
   refreshIp,
 
   isDefinitiveFailure: (e) => e instanceof V.VirtError && e.kind === "panel",
-  removeOrphan: (vpsId) => V.deleteVps(vpsId),
+  async removeOrphan(res) {
+    if (res.vpsId) await V.deleteVps(res.vpsId);
+  },
   async findExisting(serviceId) {
     const vps = await V.findByHostname(hostnameFor(serviceId));
     return vps ? { vpsId: vps.vpsid, ip: vps.ips[0] ?? null } : null;

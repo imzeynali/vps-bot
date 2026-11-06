@@ -1,6 +1,7 @@
 import type { Api } from "grammy";
 import { query, queryOne, withTx } from "./db";
 import { findExisting, isDefinitiveFailure, provisionServer, removeOrphan } from "./provider";
+import type { ProvisionResult } from "./provider";
 import { datacenterOfError } from "@/core/errors";
 import { getDatacenter } from "@/datacenters";
 import { getSettings } from "./settings";
@@ -48,16 +49,16 @@ function credentials(s: Cred) {
 }
 
 /** سرویس را فعال می‌کند (فقط اگر هنوز provisioning باشد). true = فعال شد */
-async function activate(api: Api, serviceId: number, vpsId: number, ip: string | null): Promise<boolean> {
+async function activate(api: Api, serviceId: number, res: ProvisionResult): Promise<boolean> {
   const row = await queryOne<Cred & { user_id: number; login_user: string; login_pass: string }>(
     `UPDATE services
-        SET status='active', vps_id=$2, ip=$3, power='on', last_billed_at=now(), provision_error=NULL,
+        SET status='active', vps_id=$2, ip=$3, external_id=$4, dc_meta=COALESCE($5::jsonb, dc_meta), power='on', last_billed_at=now(), provision_error=NULL,
             trial = (billing_mode='monthly'),
             period_start = CASE WHEN billing_mode='monthly' THEN now() END,
             period_end   = CASE WHEN billing_mode='monthly' THEN now() + interval '24 hours' END
       WHERE id=$1 AND status='provisioning'
       RETURNING id, user_id, ip, login_user, login_pass, billing_mode, initial_charge, monthly_price`,
-    [serviceId, vpsId, ip],
+    [serviceId, res.vpsId, res.ip, res.externalId ?? null, res.meta ? JSON.stringify(res.meta) : null],
   );
   if (!row) return false;
   await tell(api, row.user_id, credentials(row));
@@ -104,10 +105,10 @@ async function refund(api: Api, serviceId: number, reason: string) {
 export async function startProvisioning(api: Api, serviceId: number): Promise<void> {
   try {
     const r = await provisionServer(serviceId);
-    const ok = await activate(api, serviceId, r.vpsId, r.ip);
+    const ok = await activate(api, serviceId, r);
     if (!ok) {
       // در این فاصله سرویس لغو/برگشت خورده؛ VPS یتیم را پاک کن
-      await removeOrphan(serviceId, r.vpsId).catch((e) => console.error("orphan cleanup failed", serviceId, e));
+      await removeOrphan(serviceId, r).catch((e) => console.error("orphan cleanup failed", serviceId, e));
     }
   } catch (e) {
     console.error("provisioning failed", serviceId, e);
@@ -137,7 +138,7 @@ export async function recoverStuck(api: Api): Promise<void> {
     if (!dc || !dc.implemented || !dc.isConfigured()) continue;
     try {
       const found = await findExisting(id);
-      if (found) await activate(api, id, found.vpsId, found.ip);
+      if (found) await activate(api, id, found);
       else await refund(api, id, "ساخت سرور کامل نشد (timeout)");
     } catch (e) {
       console.error("recoverStuck skipped", id, e instanceof Error ? e.message : e); // پنل در دسترس نیست؛ دور بعد

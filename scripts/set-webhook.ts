@@ -1,3 +1,4 @@
+export {}; // ماژول: جلوگیری از تداخل نام main با فایل‌های دیگر
 async function main() {
   const { BOT_TOKEN, APP_URL, WEBHOOK_SECRET } = process.env;
   if (!BOT_TOKEN || !APP_URL) throw new Error("BOT_TOKEN و APP_URL را تنظیم کنید");

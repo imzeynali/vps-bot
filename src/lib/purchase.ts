@@ -36,7 +36,7 @@ export async function purchaseService(i: {
     // ── جداسازی دیتاسنتر: لوکیشن، سیستم‌عامل و پلن باید متعلق به یک دیتاسنتر باشند ──
     if (p.datacenter !== loc.datacenter || os.datacenter !== loc.datacenter) return { error: "❌ انتخاب نامعتبر (ناسازگاری دیتاسنتر)" };
     const dc = getDatacenter(loc.datacenter);
-    if (!dc || !dc.implemented) return { error: "❌ این دیتاسنتر هنوز فعال نشده است." };
+    if (!dc || !dc.implemented || !dc.isConfigured()) return { error: "❌ این دیتاسنتر هنوز فعال نشده است." };
     if (!(await isEnabled(dc.id))) return { error: "❌ خرید در این دیتاسنتر موقتاً غیرفعال است." };
 
     let charge = p.hourly_price;
