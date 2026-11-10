@@ -27,17 +27,23 @@ async function main() {
   await query("DELETE FROM plans");
   await query("DELETE FROM settings WHERE key LIKE 'flag:dc_enabled:%'");
   await query("INSERT INTO users (id, balance) VALUES (7, 10000000) ON CONFLICT (id) DO UPDATE SET balance=10000000");
-  await query("INSERT INTO locations (key,title,serid,datacenter,dc_ref) VALUES ('cg1','CGI',0,'cgi','r1')");
-  await query("INSERT INTO os_templates (key,name,osid,datacenter,dc_ref) VALUES ('cgu','Ubuntu 24.04',0,'cgi','IMG-U24'),('cgd','Debian 12',0,'cgi','IMG-D12')");
+  await query("INSERT INTO locations (key,title,serid,datacenter,dc_ref) VALUES ('cg1','🇫🇮 فنلاند',0,'cgi','r1'),('cg2','🇱🇻 لاتویا',0,'cgi','r2')");
+  // پلن/OS با «نام» ذخیره می‌شوند و در هر ریجن به شناسه‌ی همان ریجن تبدیل می‌شوند
+  await query("INSERT INTO os_templates (key,name,osid,datacenter,dc_ref) VALUES ('cgu','UBUNTU 24',0,'cgi','Ubuntu-24.04-amd64'),('cgd','UBUNTU 22',0,'cgi','Ubuntu-22.04-amd64')");
   const planId = (await queryOne<{ id: number }>(
-    "INSERT INTO plans (name,cpu,ram_gb,disk_gb,hourly_price,monthly_price,datacenter,dc_ref) VALUES ('1C',1,1,10,300,60000,'cgi','FLV-1') RETURNING id",
+    "INSERT INTO plans (name,cpu,ram_gb,disk_gb,hourly_price,monthly_price,datacenter,dc_ref) VALUES ('hostvds-1',1,1,10,300,60000,'cgi','hostvds-1') RETURNING id",
   ))!.id;
+  const plan2Id = (await queryOne<{ id: number }>(
+    "INSERT INTO plans (name,cpu,ram_gb,disk_gb,hourly_price,monthly_price,datacenter,dc_ref) VALUES ('hostvds-2',1,2,20,600,120000,'cgi','hostvds-2') RETURNING id",
+  ))!.id;
+  // قیمت تمام‌شده‌ی هر سرعت (قیمت سرویس از همین‌جا می‌آید، نه از قیمت پایه‌ی پلن)
+  await query("INSERT INTO bandwidth_prices (plan_id, mbps, hourly_price, monthly_price) VALUES ($1,100,250,50000),($1,1000,300,60000),($1,10000,450,90000)", [planId]);
 
-  const mkSvc = async (os_key = "cgu") =>
+  const mkSvc = async (os_key = "cgu", meta: Record<string, string> = { region: "r1" }, plan = planId) =>
     (await queryOne<{ id: number }>(
-      `INSERT INTO services (user_id, plan_id, hourly_price, status, datacenter, location_key, os_key, login_user, login_pass, panel_pass)
-       VALUES (7, $1, 300, 'provisioning', 'cgi', 'cg1', $2, 'root', $3, 'x') RETURNING id`,
-      [planId, os_key, genPassword()],
+      `INSERT INTO services (user_id, plan_id, hourly_price, status, datacenter, location_key, os_key, login_user, login_pass, panel_pass, dc_meta)
+       VALUES (7, $1, 300, 'provisioning', 'cgi', 'cg1', $2, 'root', $3, 'x', $4::jsonb) RETURNING id`,
+      [plan, os_key, genPassword(), JSON.stringify(meta)],
     ))!.id;
   const activate = (sid: number, r: { externalId?: string; ip: string | null; meta?: unknown }) =>
     query("UPDATE services SET status='active', external_id=$2, ip=$3, dc_meta=$4::jsonb WHERE id=$1", [sid, r.externalId, r.ip, JSON.stringify(r.meta ?? {})]);
@@ -49,7 +55,8 @@ async function main() {
   t("health: اتصال، سهمیه و تعداد شبکه‌ی IPv4", async () => {
     const h = await cgi.health();
     assert.equal(h.ok, true);
-    assert.match(h.detail, /سرور 0\/10/);
+    assert.match(h.detail, /r1: سرور 0\/10/);
+    assert.match(h.detail, /r2: سرور 0\/10/); // هر ریجن فعالِ لوکیشن‌ها جدا گزارش می‌شود
     assert.match(h.detail, /2 شبکه/); // شبکه‌ی فقط‌IPv6 حساب نمی‌شود
   });
 
@@ -70,12 +77,24 @@ async function main() {
     assert.equal(os.ports.get(srv.port).device_id, srv.id);
   });
 
-  t("شبکه‌ی پر رد می‌شود و شبکه‌ی بعدی امتحان می‌شود", async () => {
+  t("شبکه‌ای که فقط IPv6 می‌دهد (IPv4 پر) رد می‌شود و پورتش پس داده می‌شود", async () => {
     reset();
-    os.nets[0].capacity = 0;
-    const r = await P.provisionServer(await mkSvc());
-    assert.equal(os.ports.get(r.meta!.port_id as string).network_id, "net-02");
+    os.nets[0].capacity = 0; // net-01 بدون خطا فقط IPv6 می‌دهد
+    for (let i = 0; i < 6; i++) { // شبکه‌ها تصادفی امتحان می‌شوند؛ چند بار تکرار تا هر دو ترتیب پوشش داده شود
+      reset(); os.nets[0].capacity = 0;
+      const r = await P.provisionServer(await mkSvc());
+      assert.equal(os.ports.get(r.meta!.port_id as string).network_id, "net-02");
+      assert.ok(r.ip?.startsWith("13.140.85."));
+      assert.equal(os.ports.size, 1); // پورت v6-only نشت نکرده
+    }
     assert.ok(os.calls.some((c) => c.method === "POST" && c.path.endsWith("/ports"))); // تلاش‌های ناموفق هم ثبت شده
+  });
+
+  t("سیاست Neutron: ساخت پورت با fixed_ips ممنوع است ← هرگز ارسال نمی‌شود", async () => {
+    reset();
+    await P.provisionServer(await mkSvc());
+    const posts = os.calls.filter((c) => c.method === "POST" && c.path.endsWith("/ports"));
+    assert.ok(posts.length > 0 && posts.every((c) => !("fixed_ips" in (c.body.port ?? {}))));
   });
 
   t("همه‌ی شبکه‌ها پر: خطای قطعی (بازگشت وجه) و بدون نشت پورت/سرور", async () => {
@@ -138,7 +157,7 @@ async function main() {
     await activate(sid, await P.provisionServer(sid));
     const { password } = await P.rebuildServer(sid, "cgd");
     const srv = [...os.servers.values()][0];
-    assert.equal(srv.image, "IMG-D12");
+    assert.equal(srv.image, "IMG-U22");
     assert.ok(Buffer.from(srv.userData, "base64").toString().includes(`root:${password}`));
   });
 
@@ -185,21 +204,92 @@ async function main() {
     assert.equal(await P.isDefinitiveFailure(sid, new CgiError("x", "http", 400)), true);
   });
 
-  t("seed: پلن‌های غیرفعال با قیمت ۰، فقط OSهای اصلی، لوکیشن؛ اجرای دوباره idempotent", async () => {
-    const { seedCatalog } = await import("../src/datacenters/cgi/seed");
-    await query("DELETE FROM plans WHERE datacenter='cgi' AND id<>$1", [planId]);
-    const a = await seedCatalog();
-    assert.equal(a.plans.created, 1); // FLV-HL جدید؛ FLV-1 قبلاً بود؛ فلور بدون دیسک نادیده گرفته شد
-    const hl = (await queryOne<any>("SELECT name, hourly_price, active, dc_ref FROM plans WHERE dc_ref='FLV-HL'"))!;
-    assert.equal(hl.hourly_price, 0);
-    assert.equal(hl.active, false);
-    assert.ok(hl.name.includes("4GB") && hl.name.includes("(HL)"));
-    const oses = (await query<{ key: string }>("SELECT key FROM os_templates WHERE datacenter='cgi' AND key LIKE 'cg\\_%' ORDER BY key")).map((r) => r.key);
-    assert.deepEqual(oses, ["cg_debian_12", "cg_ubuntu_2404"]); // Debian-10 و ایمیج آماده حذف شدند
-    const b = await seedCatalog();
-    assert.equal(b.plans.created, 0);
-    assert.equal((await queryOne<any>("SELECT count(*)::int AS n FROM plans WHERE datacenter='cgi'"))!.n, 2);
-    assert.equal((await queryOne<any>("SELECT dc_ref FROM locations WHERE key='cgi1'"))!.dc_ref, "r1");
+  t("ریجن دوم: فلور/ایمیج همان ریجن (شناسه‌های متفاوت) و درخواست‌ها به مسیر همان ریجن", async () => {
+    reset();
+    const sid = await mkSvc("cgu", { region: "r2" });
+    const r = await P.provisionServer(sid);
+    const srv = os.servers.get(r.externalId!);
+    assert.equal(srv.region, "r2");
+    assert.equal(srv.flavor, "R2-FLV-1");
+    assert.equal(srv.image, "R2-IMG-U24");
+    assert.equal(r.meta!.region, "r2");
+    assert.ok(os.calls.some((c) => c.path.startsWith("/r2/compute")) && os.calls.some((c) => c.path.startsWith("/r2/network")));
+    await P.deleteServer(sid); // حذف هم در ریجن درست
+    assert.equal(os.servers.size + os.ports.size, 0);
+  });
+
+  t("پلنی که در ریجن نیست (hostvds-2 در r2): خطای قطعی با پیام قابل‌فهم و بدون نشت", async () => {
+    reset();
+    const sid = await mkSvc("cgu", { region: "r2" }, plan2Id);
+    const e = await P.provisionServer(sid).catch((x) => x);
+    assert.ok(e instanceof CgiError && e.kind === "config" && /موجود نیست/.test(e.userHint ?? ""));
+    assert.equal(await P.isDefinitiveFailure(sid, e), true);
+    assert.equal(os.ports.size + os.servers.size, 0);
+  });
+
+  t("شبکه‌ی انتخابیِ کاربر: همان شبکه (حتی با حروف متفاوت) و ذخیره‌ی نام آن", async () => {
+    reset();
+    for (const [pref, net] of [["Internet-02", "net-02"], ["internet-01", "net-01"]] as const) {
+      reset();
+      const r = await P.provisionServer(await mkSvc("cgu", { region: "r1", network: pref }));
+      assert.equal(os.ports.get(r.meta!.port_id as string).network_id, net);
+      assert.equal(r.meta!.network, net === "net-02" ? "Internet-02" : "Internet-01");
+    }
+  });
+
+  t("شبکه‌ی انتخابی پر است: جایگزین نمی‌شود؛ خطای قطعی با راهنمای کاربر و بدون نشت", async () => {
+    reset();
+    os.nets[1].capacity = 0; // Internet-02 پر (۴۰۹)، Internet-01 آزاد
+    const sid = await mkSvc("cgu", { region: "r1", network: "Internet-02" });
+    const e = await P.provisionServer(sid).catch((x) => x);
+    assert.ok(e instanceof CgiError && e.status === 409 && /شبکه‌ی دیگر/.test(e.userHint ?? ""));
+    assert.equal(await P.isDefinitiveFailure(sid, e), true);
+    assert.equal(os.ports.size + os.servers.size, 0);
+  });
+
+  t("شبکه‌ی انتخابیِ ناموجود: خطای قطعی", async () => {
+    reset();
+    const e = await P.provisionServer(await mkSvc("cgu", { region: "r1", network: "Internet-99" })).catch((x) => x);
+    assert.ok(e instanceof CgiError && e.kind === "config");
+  });
+
+  t("قیمت از روی پهنای باند انتخابی: کسر اول، قیمت ساعتی/ماهانه‌ی سرویس و ثبت سرعت؛ پهنای نامعتبر/بدون قیمت رد می‌شود", async () => {
+    reset();
+    await query("UPDATE users SET balance=1000000 WHERE id=7");
+    // سرعت ۱۰۰۰۰ ← ساعتی ۴۵۰ (نه ۳۰۰ قیمت پایه‌ی پلن)
+    const r = await purchaseService({ userId: 7, planId, locKey: "cg1", osKey: "cgu", mode: "hourly", dcMeta: { network: "Internet-01", bandwidth: 10000 } });
+    assert.ok("sid" in r);
+    assert.equal((r as any).charged, 450);
+    const row = (await queryOne<any>("SELECT hourly_price, monthly_price, dc_meta FROM services WHERE id=$1", [(r as any).sid]))!;
+    assert.equal(row.hourly_price, 450);
+    assert.equal(row.dc_meta.bandwidth, 10000);
+    // ماهانه ← هزینه‌ی یک روزِ قیمت ماهانه‌ی همان سرعت (۱۰۰ مگابیت: ۵۰۰۰۰ ÷ ۳۰)
+    const m = await purchaseService({ userId: 7, planId, locKey: "cg1", osKey: "cgu", mode: "monthly", dcMeta: { network: "Internet-01", bandwidth: 100 } });
+    assert.equal((m as any).charged, Math.round(50000 / 30));
+    assert.equal((await queryOne<any>("SELECT monthly_price FROM services WHERE id=$1", [(m as any).sid]))!.monthly_price, 50000);
+    // سرعت نامعتبر یا ارسال‌نشده
+    const before = (await queryOne<any>("SELECT balance FROM users WHERE id=7"))!.balance;
+    for (const bw of [500, undefined]) {
+      const x = await purchaseService({ userId: 7, planId, locKey: "cg1", osKey: "cgu", mode: "hourly", dcMeta: { network: "Internet-01", ...(bw ? { bandwidth: bw } : {}) } });
+      assert.ok("error" in x && /پهنای باند/.test(x.error));
+    }
+    // پلن CGI بدون هیچ قیمتِ پهنای باند فروخته نمی‌شود
+    const noTier = (await queryOne<{ id: number }>("INSERT INTO plans (name,cpu,ram_gb,disk_gb,hourly_price,datacenter,dc_ref) VALUES ('notier',1,1,10,100,'cgi','hostvds-1') RETURNING id"))!.id;
+    const y = await purchaseService({ userId: 7, planId: noTier, locKey: "cg1", osKey: "cgu", mode: "hourly", dcMeta: { bandwidth: 1000 } });
+    assert.ok("error" in y && /قیمت‌گذاری نشده/.test(y.error));
+    assert.equal((await queryOne<any>("SELECT balance FROM users WHERE id=7"))!.balance, before); // هیچ مبلغی کسر نشده
+  });
+
+  t("QoS: اگر برای سرعت policy ثبت شده باشد روی پورت اعمال می‌شود", async () => {
+    reset();
+    await query("UPDATE bandwidth_prices SET qos_ref='qos-policy-100mbit' WHERE plan_id=$1 AND mbps=100", [planId]);
+    await query("UPDATE users SET balance=1000000 WHERE id=7");
+    const r = (await purchaseService({ userId: 7, planId, locKey: "cg1", osKey: "cgu", mode: "hourly", dcMeta: { network: "Internet-01", bandwidth: 100 } })) as any;
+    assert.equal((await queryOne<any>("SELECT dc_meta FROM services WHERE id=$1", [r.sid]))!.dc_meta.qos, "qos-policy-100mbit");
+    await P.provisionServer(r.sid);
+    const post = os.calls.filter((c) => c.method === "POST" && c.path.endsWith("/ports")).pop()!;
+    assert.equal(post.body.port.qos_policy_id, "qos-policy-100mbit");
+    await query("UPDATE bandwidth_prices SET qos_ref=NULL WHERE plan_id=$1", [planId]);
   });
 
   t("buildUserData: فقط پسورد الفبایی (جلوگیری از تزریق در cloud-init)", async () => {
@@ -211,14 +301,18 @@ async function main() {
     const sent: { to: number; text: string }[] = [];
     const api: any = { sendMessage: async (to: number, text: string) => (sent.push({ to, text }), {}) };
     await query("UPDATE users SET balance=1000000 WHERE id=7");
-    const r = await purchaseService({ userId: 7, planId, locKey: "cg1", osKey: "cgu", mode: "hourly" });
+    const r = await purchaseService({ userId: 7, planId, locKey: "cg2", osKey: "cgu", mode: "hourly", dcMeta: { network: "Internet-02", bandwidth: 1000 } });
     assert.ok("sid" in r, JSON.stringify(r));
     const sid = (r as { sid: number }).sid;
+    assert.deepEqual((await queryOne<any>("SELECT dc_meta FROM services WHERE id=$1", [sid]))!.dc_meta, { region: "r2", network: "Internet-02", bandwidth: 1000 }); // قبل از ساخت ثبت شده
     await PR.startProvisioning(api, sid);
     const row = (await queryOne<any>("SELECT status, ip, external_id, dc_meta, datacenter, vps_id FROM services WHERE id=$1", [sid]))!;
     assert.equal(row.status, "active");
     assert.equal(row.datacenter, "cgi");
     assert.ok(row.external_id && row.ip && row.dc_meta.port_id);
+    assert.equal(row.dc_meta.region, "r2"); // merge شد، جایگزین نشد
+    assert.equal(row.dc_meta.network, "Internet-02");
+    assert.ok(row.ip.startsWith("13.140.85."));
     assert.equal(row.vps_id, null);
     assert.ok(sent.some((m) => m.to === 7 && m.text.includes(row.ip))); // اطلاعات ورود به کاربر رسید
     // کمبود موجودی ← تعلیق ← خاموش شدن در CGI
@@ -237,12 +331,52 @@ async function main() {
     os.nets[0].capacity = 0; os.nets[1].capacity = 0;
     const api: any = { sendMessage: async () => ({}) };
     await query("UPDATE users SET balance=1000000 WHERE id=7");
-    const r = await purchaseService({ userId: 7, planId, locKey: "cg1", osKey: "cgu", mode: "hourly" });
+    const r = await purchaseService({ userId: 7, planId, locKey: "cg1", osKey: "cgu", mode: "hourly", dcMeta: { network: "Internet-02", bandwidth: 1000 } });
     const sid = (r as { sid: number }).sid;
+    const sent: string[] = [];
+    (api as any).sendMessage = async (_to: number, text: string) => (sent.push(text), {});
     await PR.startProvisioning(api, sid);
+    assert.ok(sent.some((t) => t.includes("شبکه‌ی دیگر"))); // راهنمای کاربر در پیام بازگشت وجه
     assert.equal((await queryOne<any>("SELECT status FROM services WHERE id=$1", [sid]))!.status, "failed");
     assert.equal((await queryOne<any>("SELECT balance FROM users WHERE id=7"))!.balance, 1000000);
     assert.equal(os.servers.size + os.ports.size, 0);
+  });
+
+  t("seed: پلن‌های hostvds فعال با قیمت پیش‌فرض، ۳ OS اوبونتو، لوکیشن‌ها با نگاشت؛ idempotent و بدون بازنویسی قیمت ادمین", async () => {
+    const { seedCatalog } = await import("../src/datacenters/cgi/seed");
+    await query("TRUNCATE services RESTART IDENTITY CASCADE"); // سرویس‌های تست قبلی به پلن‌ها ارجاع دارند
+    await query("DELETE FROM plans WHERE datacenter='cgi'");
+    await query("DELETE FROM os_templates WHERE datacenter='cgi'");
+    await query("DELETE FROM locations WHERE datacenter='cgi'");
+    await query("INSERT INTO os_templates (key,name,osid,datacenter,dc_ref,active) VALUES ('cg_debian_12','Debian 12',0,'cgi','x',TRUE)"); // قدیمی؛ باید غیرفعال شود
+    const a = await seedCatalog({ paris: "r2", fi: "r1" });
+    const plans = await query<any>("SELECT name, hourly_price, monthly_price, active, dc_ref FROM plans WHERE datacenter='cgi' ORDER BY ram_mb");
+    const byName = Object.fromEntries(plans.map((p) => [p.name, p]));
+    assert.equal(a.plans.created, 3); // hostvds-1، hostvds-2، highload-1 (فلور بدون دیسک نادیده)
+    assert.deepEqual([byName["hostvds-1"].hourly_price, byName["hostvds-1"].monthly_price, byName["hostvds-1"].active], [1386, 997920, true]);
+    assert.deepEqual([byName["hostvds-2"].hourly_price, byName["hostvds-2"].monthly_price], [2400, 1728000]);
+    assert.equal(byName["highload-1"].active, false); // قیمت پیش‌فرض ندارد ← غیرفعال
+    assert.equal(byName["hostvds-1"].dc_ref, "hostvds-1"); // نام، نه UUID
+    const oses = await query<any>("SELECT key, name, dc_ref, active FROM os_templates WHERE datacenter='cgi' ORDER BY key");
+    assert.deepEqual(oses.filter((o) => o.active).map((o) => [o.key, o.name, o.dc_ref]), [
+      ["cg_ubuntu_2004", "UBUNTU 20", "Ubuntu-20.04-amd64"], ["cg_ubuntu_2204", "UBUNTU 22", "Ubuntu-22.04-amd64"], ["cg_ubuntu_2404", "UBUNTU 24", "Ubuntu-24.04-amd64"],
+    ]);
+    assert.equal(oses.find((o) => o.key === "cg_debian_12").active, false);
+    const locs = await query<any>("SELECT key, title, dc_ref, active FROM locations WHERE datacenter='cgi' ORDER BY key");
+    assert.deepEqual(locs.filter((l) => l.active).map((l) => [l.key, l.dc_ref]), [["cgi_fi", "r1"], ["cgi_paris", "r2"]]);
+    assert.equal(locs.find((l) => l.key === "cgi_lv").active, false); // نگاشت ندارد ← غیرفعال
+    // ادمین قیمت را عوض می‌کند؛ seed دوباره چیزی را بازنویسی نمی‌کند
+    await query("UPDATE plans SET hourly_price=999 WHERE name='hostvds-1'");
+    const b = await seedCatalog({ paris: "r2", fi: "r1" });
+    assert.equal(b.plans.created, 0);
+    assert.equal((await queryOne<any>("SELECT hourly_price FROM plans WHERE name='hostvds-1'"))!.hourly_price, 999);
+    // نگاشت لاتویا بعداً اضافه می‌شود ← فعال می‌شود
+    await seedCatalog({ lv: "r2" });
+    assert.equal((await queryOne<any>("SELECT active FROM locations WHERE key='cgi_lv'"))!.active, true);
+    // برای بقیه‌ی تست‌ها
+    await query("DELETE FROM plans WHERE datacenter='cgi'");
+    await query("DELETE FROM os_templates WHERE datacenter='cgi'");
+    await query("DELETE FROM locations WHERE datacenter='cgi'");
   });
 
   let failed = 0;

@@ -53,11 +53,11 @@ export async function startMockOS(): Promise<MockOS> {
         m.calls.push({ method: "POST", path, body: { ...body, auth: "***" } });
         const ac = body?.auth?.identity?.application_credential;
         if (ac?.id !== "CID" || ac?.secret !== "CSEC") return send(401, { error: { message: "bad credential" } });
-        const ep = (type: string, url: string) => ({ type, endpoints: [{ interface: "public", region: "r1", region_id: "r1", url }] });
+        const ep = (type: string, path: string) => ({ type, endpoints: ["r1", "r2"].map((r) => ({ interface: "public", region: r, region_id: r, url: `${base}/${r}${path}` })) });
         return send(201, {
           token: {
             expires_at: new Date(Date.now() + 3600_000).toISOString(),
-            catalog: [ep("compute", `${base}/r1/compute/v2.1/PROJ`), ep("network", `${base}/r1/network/`), ep("image", `${base}/r1/image/`)],
+            catalog: [ep("compute", "/compute/v2.1/PROJ"), ep("network", "/network/"), ep("image", "/image/")],
           },
         }, { "x-subject-token": "TOK" });
       }
@@ -67,34 +67,40 @@ export async function startMockOS(): Promise<MockOS> {
       m.calls.push({ method: req.method!, path: path + u.search, body });
 
       const err = (code: number, key: string, message: string, type?: string) => send(code, { [key]: { message, code, ...(type ? { type } : {}) } });
-      const nova = path.startsWith("/r1/compute/v2.1/PROJ");
-      const neu = path.startsWith("/r1/network/");
-      const rest = nova ? path.slice("/r1/compute/v2.1/PROJ".length) : neu ? path.slice("/r1/network".length) : "";
+      const rm = path.match(/^\/(r\d)\/(compute\/v2\.1\/PROJ|network|image)(.*)$/);
+      const region = rm?.[1] ?? "";
+      const nova = rm?.[2] === "compute/v2.1/PROJ";
+      const neu = rm?.[2] === "network";
+      const rest = rm ? rm[3] : "";
+      const inR = (o: any) => o && o.region === region; // رکوردها فقط داخل ریجن خودشان دیده می‌شوند
 
       // ── Nova ──
       if (nova) {
         if (rest === "/flavors/detail") {
-          return send(200, { flavors: [
-            { id: "FLV-1", name: "hostvds-1", vcpus: 1, ram: 1024, disk: 10, "os-flavor-access:is_public": true },
-            { id: "FLV-HL", name: "highload-1", vcpus: 1, ram: 4096, disk: 30, "os-flavor-access:is_public": true },
-            { id: "FLV-0", name: "nodisk", vcpus: 1, ram: 512, disk: 0, "os-flavor-access:is_public": true },
-          ] });
+          return send(200, { flavors: region === "r2"
+            ? [{ id: "R2-FLV-1", name: "hostvds-1", vcpus: 1, ram: 1024, disk: 10, "os-flavor-access:is_public": true }]
+            : [
+              { id: "FLV-1", name: "hostvds-1", vcpus: 1, ram: 1024, disk: 10, "os-flavor-access:is_public": true },
+              { id: "FLV-2", name: "hostvds-2", vcpus: 1, ram: 2048, disk: 20, "os-flavor-access:is_public": true },
+              { id: "FLV-HL", name: "highload-1", vcpus: 1, ram: 4096, disk: 30, "os-flavor-access:is_public": true },
+              { id: "FLV-0", name: "nodisk", vcpus: 1, ram: 512, disk: 0, "os-flavor-access:is_public": true },
+            ] });
         }
         if (rest === "/limits") {
-          return send(200, { limits: { absolute: { totalInstancesUsed: m.servers.size, maxTotalInstances: m.opts.maxInstances, totalCoresUsed: m.servers.size, maxTotalCores: 20, totalRAMUsed: 1024 * m.servers.size, maxTotalRAMSize: 51200 } } });
+          return send(200, { limits: { absolute: { totalInstancesUsed: [...m.servers.values()].filter(inR).length, maxTotalInstances: m.opts.maxInstances, totalCoresUsed: m.servers.size, maxTotalCores: 20, totalRAMUsed: 1024 * m.servers.size, maxTotalRAMSize: 51200 } } });
         }
         if (rest === "/servers/detail" && req.method === "GET") {
           const re = new RegExp(u.searchParams.get("name") ?? "");
-          return send(200, { servers: [...m.servers.values()].filter((s) => re.test(s.name)).map(view) });
+          return send(200, { servers: [...m.servers.values()].filter((s) => inR(s) && re.test(s.name)).map(view) });
         }
         if (rest === "/servers" && req.method === "POST") {
           const s = body.server ?? {};
-          if (m.servers.size >= m.opts.maxInstances) return err(403, "forbidden", "Quota exceeded for instances: Requested 1, but already used 10 of 10 instances");
+          if ([...m.servers.values()].filter(inR).length >= m.opts.maxInstances) return err(403, "forbidden", "Quota exceeded for instances: Requested 1, but already used 10 of 10 instances");
           if (!s.flavorRef || !s.imageRef || !s.name || !s.networks?.[0]?.port || !s.user_data) return err(400, "badRequest", "Invalid input for server");
           const p = m.ports.get(s.networks[0].port);
-          if (!p) return err(400, "badRequest", "Invalid input for field/attribute networks. port not found");
+          if (!p || p.region !== region) return err(400, "badRequest", "Invalid input for field/attribute networks. port not found");
           const sid = id("srv");
-          const rec: any = { id: sid, name: s.name, status: "BUILD", flavor: s.flavorRef, image: s.imageRef, userData: s.user_data, port: p.id, metadata: s.metadata };
+          const rec: any = { id: sid, region, name: s.name, status: "BUILD", flavor: s.flavorRef, image: s.imageRef, userData: s.user_data, port: p.id, metadata: s.metadata };
           p.device_id = sid;
           m.servers.set(sid, rec);
           setTimeout(() => { if (m.servers.has(sid)) { rec.status = m.opts.failBuild ? "ERROR" : "ACTIVE"; if (m.opts.failBuild) rec.fault = { message: "No valid host was found", code: 500 }; } }, m.opts.buildMs);
@@ -103,7 +109,7 @@ export async function startMockOS(): Promise<MockOS> {
         const sm = rest.match(/^\/servers\/([\w-]+)(\/action)?$/);
         if (sm) {
           const s = m.servers.get(sm[1]);
-          if (!s) return err(404, "itemNotFound", "Instance could not be found");
+          if (!s || !inR(s)) return err(404, "itemNotFound", "Instance could not be found");
           if (!sm[2] && req.method === "GET") return send(200, { server: view(s) });
           if (!sm[2] && req.method === "DELETE") {
             s.status = "DELETED_PENDING";
@@ -120,20 +126,23 @@ export async function startMockOS(): Promise<MockOS> {
       }
 
       // ── Glance ──
-      if (path === "/r1/image/v2/images") {
-        return send(200, { images: [
-          { id: "IMG-U24", name: "Ubuntu-24.04-amd64", status: "active" },
-          { id: "IMG-D12", name: "Debian-12-amd64", status: "active" },
-          { id: "IMG-X", name: "prebuilt_3xui-v2.5.7_Ubuntu-24.04-amd64", status: "active" },
-          { id: "IMG-OLD", name: "Debian-10-amd64", status: "active" },
-        ] });
+      if (rm?.[2] === "image" && rest === "/v2/images") {
+        return send(200, { images: region === "r2"
+          ? [{ id: "R2-IMG-U24", name: "Ubuntu-24.04-amd64", status: "active" }]
+          : [
+            { id: "IMG-U20", name: "Ubuntu-20.04-amd64", status: "active" },
+            { id: "IMG-U22", name: "Ubuntu-22.04-amd64", status: "active" },
+            { id: "IMG-U24", name: "Ubuntu-24.04-amd64", status: "active" },
+            { id: "IMG-X", name: "prebuilt_3xui-v2.5.7_Ubuntu-24.04-amd64", status: "active" },
+            { id: "IMG-OLD", name: "Debian-10-amd64", status: "active" },
+          ] });
       }
 
       // ── Neutron ──
       if (neu) {
         if (rest === "/v2.0/networks") return send(200, { networks: m.nets.map((n) => ({ id: n.id, name: n.name })) });
         if (rest === "/v2.0/subnets") {
-          return send(200, { subnets: m.nets.flatMap((n) => [{ id: `v6-${n.id}`, network_id: n.id, ip_version: 6 }, ...(n.subnet ? [{ id: n.subnet, network_id: n.id, ip_version: 4 }] : [])]) });
+          return send(200, { subnets: m.nets.flatMap((n) => [{ id: `v6-${n.id}`, network_id: n.id, ip_version: 6, cidr: "2a13:7c00:9::/64" }, ...(n.subnet ? [{ id: n.subnet, network_id: n.id, ip_version: 4, cidr: n.id === "net-01" ? "13.140.80.0/24" : "13.140.85.0/24" }] : [])]) });
         }
         if (rest === "/v2.0/security-groups") {
           const nm = u.searchParams.get("name");
@@ -141,27 +150,32 @@ export async function startMockOS(): Promise<MockOS> {
         }
         if (rest === "/v2.0/ports" && req.method === "GET") {
           const nm = u.searchParams.get("name");
-          return send(200, { ports: [...m.ports.values()].filter((p) => !nm || p.name === nm) });
+          return send(200, { ports: [...m.ports.values()].filter((p) => inR(p) && (!nm || p.name === nm)) });
         }
         if (rest === "/v2.0/ports" && req.method === "POST") {
           const p = body.port ?? {};
           const n = m.nets.find((x) => x.id === p.network_id);
           if (!n) return err(404, "NeutronError", "Network not found", "NetworkNotFound");
+          if (p.fixed_ips) return err(403, "NeutronError", "(rule:create_port and (rule:create_port:fixed_ips and (rule:create_port:fixed_ips:subnet_id))) is disallowed by policy", "PolicyNotAuthorized");
           if (p.security_groups?.[0] !== SG) return err(400, "NeutronError", "bad security group", "SecurityGroupNotFound");
-          if (n.capacity <= 0) return err(409, "NeutronError", "No more IP addresses available on network " + n.id, "IpAddressGenerationFailure");
-          n.capacity--;
+          const full = n.capacity <= 0;
+          // شبکه‌ی پر: net-01 فقط IPv6 می‌دهد (بدون خطا)؛ بقیه ۴۰۹ می‌دهند — هر دو رفتار واقعی Neutron است
+          if (full && n.id !== "net-01") return err(409, "NeutronError", "No more IP addresses available on network " + n.id, "IpAddressGenerationFailure");
+          if (!full) n.capacity--;
           const pid = id("port");
-          const port = { id: pid, name: p.name, network_id: n.id, device_id: "", fixed_ips: [{ ip_address: `13.140.${n.id === "net-01" ? 80 : 85}.${ipn++}`, subnet_id: p.fixed_ips?.[0]?.subnet_id }] };
+          const v6 = { ip_address: `2a13:7c00:9:${n.id === "net-01" ? 1 : 2}::${ipn}`, subnet_id: `v6-${n.id}` };
+          const v4 = { ip_address: `13.140.${n.id === "net-01" ? 80 : 85}.${ipn++}`, subnet_id: n.subnet };
+          const port = { id: pid, region, name: p.name, network_id: n.id, device_id: "", v4: !full, fixed_ips: full ? [v6] : [v6, v4] };
           m.ports.set(pid, port);
           return send(201, { port });
         }
         const pm = rest.match(/^\/v2\.0\/ports\/([\w-]+)$/);
         if (pm && req.method === "DELETE") {
           const p = m.ports.get(pm[1]);
-          if (!p) return err(404, "NeutronError", "Port not found", "PortNotFound");
+          if (!p || !inR(p)) return err(404, "NeutronError", "Port not found", "PortNotFound");
           if (p.device_id) return err(409, "NeutronError", "Port is in use", "PortInUse");
           const n = m.nets.find((x) => x.id === p.network_id);
-          if (n) n.capacity++;
+          if (n && p.v4) n.capacity++;
           m.ports.delete(p.id);
           return send(204);
         }
@@ -172,7 +186,10 @@ export async function startMockOS(): Promise<MockOS> {
 
   const view = (s: any) => ({
     id: s.id, name: s.name, status: s.status, fault: s.fault,
-    addresses: s.status === "ACTIVE" || s.status === "SHUTOFF" ? { [m.nets.find((n) => n.id === m.ports.get(s.port)?.network_id)?.name ?? "net"]: [{ addr: m.ports.get(s.port)?.fixed_ips?.[0]?.ip_address, version: 4 }] } : {},
+    // Nova هر آدرس پورت را با نسخه‌ی صحیح (4/6) برمی‌گرداند
+    addresses: s.status === "ACTIVE" || s.status === "SHUTOFF"
+      ? { [m.nets.find((n) => n.id === m.ports.get(s.port)?.network_id)?.name ?? "net"]: (m.ports.get(s.port)?.fixed_ips ?? []).map((f: any) => ({ addr: f.ip_address, version: f.ip_address.includes(":") ? 6 : 4 })) }
+      : {},
   });
 
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));

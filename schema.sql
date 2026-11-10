@@ -147,3 +147,14 @@ ALTER TABLE services     ADD COLUMN IF NOT EXISTS dc_meta JSONB NOT NULL DEFAULT
 ALTER TABLE plans        ADD COLUMN IF NOT EXISTS dc_ref TEXT;                              -- Flavor ID
 ALTER TABLE os_templates ADD COLUMN IF NOT EXISTS dc_ref TEXT;                              -- Image ID
 ALTER TABLE locations    ADD COLUMN IF NOT EXISTS dc_ref TEXT;                              -- نام Region
+
+-- ── پهنای باند (CGI): قیمت «تمام‌شده»ی سرویس برای هر پلن و سرعت. هزینه‌ی ساعتی/ماهانه‌ی سرویس از همین‌جا می‌آید ──
+CREATE TABLE IF NOT EXISTS bandwidth_prices (
+    plan_id       INT     NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
+    mbps          INT     NOT NULL,                 -- 100 / 1000 / 10000
+    hourly_price  BIGINT  NOT NULL,
+    monthly_price BIGINT,                           -- خالی = ماهانه برای این سرعت فعال نیست
+    qos_ref       TEXT,                             -- (اختیاری) شناسه‌ی QoS policy در Neutron برای اعمال محدودیت سرعت روی پورت
+    active        BOOLEAN NOT NULL DEFAULT TRUE,
+    PRIMARY KEY (plan_id, mbps)
+);

@@ -141,36 +141,45 @@ export function registerBuy(bot: Bot<BotContext>) {
 
   bot.callbackQuery(/^buyc:([hm]):(\d+):(\w+):(\w+)$/, async (ctx) => {
     const [, m, pid, lk, ok] = ctx.match;
-    const mode = m === "m" ? "monthly" : "hourly";
-
-    // ۱) کسر هزینه + ثبت سرویس (provisioning) در یک تراکنش سریع؛ ساخت روی پنل بعد از commit
-    const result = await purchaseService({ userId: uid(ctx), planId: Number(pid), locKey: lk, osKey: ok, mode }).catch(
-      (e) => {
-        console.error("buy error", e);
-        return { error: "❌ خطا در ثبت سفارش. مبلغی کسر نشد، دوباره تلاش کنید." };
-      },
-    );
-    if ("error" in result) return alert(ctx, result.error);
-
-    void (async () =>
-      report(
-        ctx.api,
-        "finance",
-        `🛒 <b>خرید سرویس</b> — کد <code>${codes.buy(result.sid)}</code>\n🕒 ${stamp()}\n` +
-          `🖥 سرور #${result.sid} | ${mode === "monthly" ? "🗓 ماهانه (هزینه‌ی روز تست)" : "⏰ ساعتی"}\n` +
-          `💵 کسر شده: <b>${fmt(result.charged)}</b> تومان\n${await payerInfo(uid(ctx))}`,
-      ))().catch(() => {});
-
-    // ۲) ساخت در پس‌زمینه (ممکن است چند ده ثانیه طول بکشد)
-    void startProvisioning(ctx.api, result.sid);
-    await show(
-      ctx,
-      `⏳ <b>سرور #${result.sid} در حال ساخت است…</b>\n` +
-        (mode === "monthly"
-          ? `🗓 سرویس ماهانه — هزینه‌ی یک روز تست (${fmt(result.charged)} تومان) کسر شد.\n`
-          : `⏰ سرویس ساعتی — ${fmt(result.charged)} تومان کسر شد.\n`) +
-        `معمولاً کمتر از چند دقیقه طول می‌کشد؛ به‌محض آماده شدن، مشخصات برای شما ارسال می‌شود.`,
-      backKb([["📦 سرویس‌های من", "services"]]),
-    );
+    await performPurchase(ctx, { planId: Number(pid), locKey: lk, osKey: ok, mode: m === "m" ? "monthly" : "hourly" });
   });
+}
+
+/**
+ * ثبت خرید (کسر هزینه + ساخت در پس‌زمینه) — مشترک بین جریان استاندارد و جریان اختصاصی CGI.
+ */
+export async function performPurchase(
+  ctx: BotContext,
+  i: { planId: number; locKey: string; osKey: string; mode: "hourly" | "monthly"; dcMeta?: { network?: string; bandwidth?: number } },
+) {
+  const mode = i.mode;
+  // ۱) کسر هزینه + ثبت سرویس (provisioning) در یک تراکنش سریع؛ ساخت روی دیتاسنتر بعد از commit
+  const result = await purchaseService({ userId: uid(ctx), planId: i.planId, locKey: i.locKey, osKey: i.osKey, mode, dcMeta: i.dcMeta }).catch(
+    (e) => {
+      console.error("buy error", e);
+      return { error: "❌ خطا در ثبت سفارش. مبلغی کسر نشد، دوباره تلاش کنید." };
+    },
+  );
+  if ("error" in result) return alert(ctx, result.error);
+
+  void (async () =>
+    report(
+      ctx.api,
+      "finance",
+      `🛒 <b>خرید سرویس</b> — کد <code>${codes.buy(result.sid)}</code>\n🕒 ${stamp()}\n` +
+        `🖥 سرور #${result.sid} | ${mode === "monthly" ? "🗓 ماهانه (هزینه‌ی روز تست)" : "⏰ ساعتی"}\n` +
+        `💵 کسر شده: <b>${fmt(result.charged)}</b> تومان\n${await payerInfo(uid(ctx))}`,
+    ))().catch(() => {});
+
+  // ۲) ساخت در پس‌زمینه (ممکن است چند ده ثانیه طول بکشد)
+  void startProvisioning(ctx.api, result.sid);
+  await show(
+    ctx,
+    `⏳ <b>سرور #${result.sid} در حال ساخت است…</b>\n` +
+      (mode === "monthly"
+        ? `🗓 سرویس ماهانه — هزینه‌ی یک روز تست (${fmt(result.charged)} تومان) کسر شد.\n`
+        : `⏰ سرویس ساعتی — ${fmt(result.charged)} تومان کسر شد.\n`) +
+      `معمولاً کمتر از چند دقیقه طول می‌کشد؛ به‌محض آماده شدن، مشخصات برای شما ارسال می‌شود.`,
+    backKb([["📦 سرویس‌های من", "services"]]),
+  );
 }

@@ -25,6 +25,8 @@ async function tellAdmins(api: Api, text: string) {
 
 interface Cred {
   id: number;
+  /** مشخصات سرویس برای پیام تحویل (اختیاری) */
+  detail?: { plan: string; cpu: number; ram_gb: number; disk_gb: number; location: string | null; os: string | null; meta: { network?: string; bandwidth?: number } };
   ip: string | null;
   login_user: string | null;
   login_pass: string | null;
@@ -38,8 +40,18 @@ function credentials(s: Cred) {
     s.billing_mode === "monthly"
       ? `\n\n🗓 <b>سرویس ماهانه</b>\nهزینه‌ی یک روز (${(s.initial_charge ?? 0).toLocaleString("en-US")} تومان) برای تست کسر شد. اگر تا ۲۴ ساعت دیگر مشکلی گزارش نکنید (دکمه «⚠️ گزارش مشکل» در بخش سرویس‌های من)، مابقی مبلغ ماهانه (${((s.monthly_price ?? 0) - (s.initial_charge ?? 0)).toLocaleString("en-US")} تومان) کسر می‌شود.`
       : "";
+  const d = s.detail;
+  const specs = d
+    ? `🖥 پلن: ${esc(d.plan)}\n⚙️ مشخصات: ${d.cpu} vCPU | ${d.ram_gb}GB RAM | ${d.disk_gb}GB دیسک\n` +
+      (d.location ? `🌍 لوکیشن: ${esc(d.location)}\n` : "") +
+      (d.os ? `💿 سیستم‌عامل: ${esc(d.os)}\n` : "") +
+      (d.meta?.network ? `🌐 شبکه: ${esc(d.meta.network.toUpperCase())}\n` : "") +
+      (d.meta?.bandwidth ? `📶 پهناباند: ${d.meta.bandwidth} مگابیت نامحدود\n` : "") +
+      "\n"
+    : "";
   return (
     `✅ <b>سرور #${s.id} ساخته شد</b>\n\n` +
+    specs +
     `🌐 IP: <code>${esc(s.ip ?? "در حال تخصیص")}</code>\n` +
     `👤 یوزر: <code>${esc(s.login_user)}</code>\n` +
     `🔑 پسورد: <code>${esc(s.login_pass)}</code>\n\n` +
@@ -52,7 +64,7 @@ function credentials(s: Cred) {
 async function activate(api: Api, serviceId: number, res: ProvisionResult): Promise<boolean> {
   const row = await queryOne<Cred & { user_id: number; login_user: string; login_pass: string }>(
     `UPDATE services
-        SET status='active', vps_id=$2, ip=$3, external_id=$4, dc_meta=COALESCE($5::jsonb, dc_meta), power='on', last_billed_at=now(), provision_error=NULL,
+        SET status='active', vps_id=$2, ip=$3, external_id=$4, dc_meta=dc_meta || COALESCE($5::jsonb, '{}'::jsonb), power='on', last_billed_at=now(), provision_error=NULL,
             trial = (billing_mode='monthly'),
             period_start = CASE WHEN billing_mode='monthly' THEN now() END,
             period_end   = CASE WHEN billing_mode='monthly' THEN now() + interval '24 hours' END
@@ -61,7 +73,11 @@ async function activate(api: Api, serviceId: number, res: ProvisionResult): Prom
     [serviceId, res.vpsId, res.ip, res.externalId ?? null, res.meta ? JSON.stringify(res.meta) : null],
   );
   if (!row) return false;
-  await tell(api, row.user_id, credentials(row));
+  const d = await queryOne<{ plan: string; cpu: number; ram_gb: number; disk_gb: number; location: string | null; os: string | null; meta: Record<string, any> }>(
+    `SELECT p.name AS plan, p.cpu, p.ram_gb, p.disk_gb, s.location, s.os, s.dc_meta AS meta FROM services s JOIN plans p ON p.id = s.plan_id WHERE s.id=$1`,
+    [serviceId],
+  );
+  await tell(api, row.user_id, credentials({ ...row, detail: d ?? undefined }));
   void report(
     api,
     "servers",
@@ -71,7 +87,7 @@ async function activate(api: Api, serviceId: number, res: ProvisionResult): Prom
 }
 
 /** شکست قطعی: وضعیت failed + برگرداندن هزینه (فقط یک‌بار) */
-async function refund(api: Api, serviceId: number, reason: string) {
+async function refund(api: Api, serviceId: number, reason: string, hint?: string) {
   const r = await withTx(async (c) => {
     const s = (
       await c.query<{ user_id: number; amount: number }>(
@@ -96,7 +112,7 @@ async function refund(api: Api, serviceId: number, reason: string) {
   await tell(
     api,
     r.user_id,
-    `❌ ساخت سرور #${serviceId} با خطا روبه‌رو شد و مبلغ <b>${r.amount.toLocaleString("en-US")}</b> تومان به حساب شما برگشت داده شد.\nلطفاً دوباره تلاش کنید یا با پشتیبانی (${esc((await getSettings()).support)}) تماس بگیرید.`,
+    `❌ ساخت سرور #${serviceId} با خطا روبه‌رو شد و مبلغ <b>${r.amount.toLocaleString("en-US")}</b> تومان به حساب شما برگشت داده شد.${hint ? `\nℹ️ ${esc(hint)}` : ""}\nلطفاً دوباره تلاش کنید یا با پشتیبانی (${esc((await getSettings()).support)}) تماس بگیرید.`,
     false,
   );
 }
@@ -119,7 +135,7 @@ export async function startProvisioning(api: Api, serviceId: number): Promise<vo
       `⚠️ <b>خطا در ساخت سرور #${serviceId}</b>${dcTitle ? `\n🌐 دیتاسنتر: ${esc(dcTitle)}` : ""}\n<code>${esc(msg).slice(0, 600)}</code>`,
     );
     if (await isDefinitiveFailure(serviceId, e).catch(() => false)) {
-      await refund(api, serviceId, msg);
+      await refund(api, serviceId, msg, (e as { userHint?: string }).userHint);
     } else {
       // نتیجه نامشخص (timeout/قطع اتصال): ممکن است VPS ساخته شده باشد؛ recoverStuck بررسی می‌کند
       await query("UPDATE services SET provision_error=$2 WHERE id=$1", [serviceId, msg.slice(0, 500)]);

@@ -10,6 +10,8 @@ export class CgiError extends Error {
     readonly kind: CgiErrorKind,
     readonly status = 0,
     readonly type?: string, // نوع خطا در Neutron (مثل IpAddressGenerationFailure)
+    /** پیام مناسب نمایش به کاربر نهایی (در متن بازگشت وجه می‌آید) */
+    public userHint?: string,
   ) {
     super(message);
     this.name = "CgiError";
@@ -70,10 +72,10 @@ export const resetSession = () => {
   g.__cgiSession = undefined;
 };
 
-function endpoint(s: Session, type: Service): string {
+function endpoint(s: Session, type: Service, region: string): string {
   const svc = s.catalog.find((c) => c.type === type);
-  const ep = svc?.endpoints.find((e) => e.interface === "public" && (e.region === config.cgi.region || e.region_id === config.cgi.region));
-  if (!ep) throw new CgiError(`سرویس ${type} برای ریجن ${config.cgi.region} در کاتالوگ CGI پیدا نشد`, "config");
+  const ep = svc?.endpoints.find((e) => e.interface === "public" && (e.region === region || e.region_id === region));
+  if (!ep) throw new CgiError(`سرویس ${type} برای ریجن ${region} در کاتالوگ CGI پیدا نشد`, "config");
   return ep.url.replace(/\/+$/, "");
 }
 
@@ -93,6 +95,16 @@ function parseError(j: unknown): { message: string; type?: string } {
 export interface CallOpts {
   body?: unknown;
   query?: Record<string, string>;
+  /** ریجن هدف (پیش‌فرض: CGI_REGION). یک توکن Keystone برای همه‌ی ریجن‌ها معتبر است. */
+  region?: string;
+}
+
+/** ریجن‌های موجود در کاتالوگ توکن (برای ابزارهای کشف) */
+export async function catalogRegions(): Promise<string[]> {
+  const s = await session();
+  const set = new Set<string>();
+  for (const e of s.catalog.find((c) => c.type === "compute")?.endpoints ?? []) if (e.interface === "public" && e.region) set.add(e.region);
+  return [...set].sort();
 }
 
 export async function call<T = Record<string, any>>(service: Service, method: string, path: string, opts: CallOpts = {}): Promise<{ status: number; json: T }> {
@@ -101,7 +113,7 @@ export async function call<T = Record<string, any>>(service: Service, method: st
     const qs = opts.query ? "?" + new URLSearchParams(opts.query).toString() : "";
     let r: Response;
     try {
-      r = await fetch(endpoint(s, service) + path + qs, {
+      r = await fetch(endpoint(s, service, opts.region ?? config.cgi.region) + path + qs, {
         method,
         headers: {
           "X-Auth-Token": s.token,

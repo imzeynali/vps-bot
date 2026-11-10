@@ -5,6 +5,7 @@ import { queryOne } from "@/lib/db";
 import { esc, reportError, stamp } from "@/lib/adminGroup";
 import { registerStart } from "./handlers/start";
 import { registerBuy } from "./handlers/buy";
+import { registerBuyCgi } from "./handlers/buyCgi";
 import { registerServices } from "./handlers/services";
 import { registerWallet } from "./handlers/wallet";
 import { registerAdmin } from "./handlers/admin";
@@ -13,6 +14,7 @@ import { registerAdminCatalog } from "./handlers/adminCatalog";
 import { registerAdminPanel } from "./handlers/adminPanel";
 import { registerAdminGroup } from "./handlers/adminGroup";
 import { registerAdminDatacenters } from "./handlers/adminDatacenters";
+import { registerAdminBandwidth } from "./handlers/adminBandwidth";
 import { registerUserReport } from "./handlers/userReport";
 
 const g = globalThis as unknown as { __bot?: Bot<BotContext> };
@@ -39,10 +41,12 @@ function createBot(): Bot<BotContext> {
   registerAdmin(bot);
   registerAdminVirt(bot); // قبل از registerAdminPanel (فالبک adm:*)
   registerAdminCatalog(bot); // پلن/لوکیشن/OS/تنظیمات از داخل پنل ادمین
+  registerAdminBandwidth(bot); // قیمت پهنای باند CGI (/bw /setbw)
   registerAdminDatacenters(bot); // مدیریت دیتاسنترها (قبل از فالبک adm:*)
   registerAdminGroup(bot); // گروه مدیریتی (قبل از فالبک adm:*)
   registerUserReport(bot); // گزارش کاربران ← تاپیک پیگیری
   registerAdminPanel(bot); // باید قبل از registerWallet باشد (پیام همگانی)
+  registerBuyCgi(bot); // جریان اختصاصی CGI (باید قبل از buy باشد تا dc:cgi را بگیرد)
   registerBuy(bot);
   registerServices(bot);
   registerWallet(bot); // شامل message:text و message:photo؛ آخر ثبت شود

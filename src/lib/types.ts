@@ -10,6 +10,7 @@ export interface Plan {
   active: boolean;
   virt_plid: number | null;
   datacenter: string;
+  dc_ref: string | null;
 }
 
 export interface ServiceRow {
