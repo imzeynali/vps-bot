@@ -14,7 +14,7 @@ set -uo pipefail
 cd /tmp 2>/dev/null || true
 
 # ───────────────────────────── Settings ─────────────────────────────
-INSTALLER_VERSION="1.1.0"
+INSTALLER_VERSION="1.1.1"
 DEFAULT_REPO="YOUR_GITHUB_USERNAME/vps-bot-next"   # ← replace with your own repo
 APP_USER="vpsbot"
 INSTALL_ROOT="/opt/vps-bot"
@@ -165,6 +165,14 @@ as_app() {
     ${VPSBOT_NPM_REGISTRY:+npm_config_registry="$VPSBOT_NPM_REGISTRY"} "$@"
 }
 app_run() { as_app bash -c "cd '$APP_DIR' && $*"; }
+
+# Running npm/build as root by hand leaves root-owned files (node_modules, .next) that the service user cannot update.
+fix_perms() {
+  chown -R "$APP_USER":"$APP_USER" "$APP_DIR" 2>/dev/null
+  [[ -d "$INSTALL_ROOT/.npm" ]] && chown -R "$APP_USER":"$APP_USER" "$INSTALL_ROOT/.npm" 2>/dev/null
+  [[ -f "$ENV_FILE" ]] && chmod 600 "$ENV_FILE"
+  return 0
+}
 
 repo_url() {
   if [[ "$REPO" == *"://"* || "$REPO" == git@* ]]; then echo "$REPO"; else echo "https://github.com/${REPO}.git"; fi
@@ -416,6 +424,7 @@ do_cgi() {
   need_root
   is_installed || { err "Not installed."; return 1; }
   load_meta
+  fix_perms
   if ! cgi_configured; then
     info "CGI is not configured yet."
     ask_cgi_credentials
@@ -728,6 +737,7 @@ do_update() {
     info "Already on the latest version (${new})."
     confirm "Rebuild and restart anyway?" n || return 0
   fi
+  run_step "Fixing file permissions"        fix_perms
   run_step "Installing dependencies"        step_npm_install || return 1
   run_step "Applying database migrations"   step_migrate     || return 1
   if cgi_configured; then
