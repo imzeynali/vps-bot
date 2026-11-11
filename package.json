@@ -16,6 +16,7 @@
     "cgi:seed": "tsx --env-file=.env.local scripts/cgi-seed.ts",
     "cgi:regions": "tsx --env-file=.env.local scripts/cgi-regions.ts",
     "cgi:smoke": "tsx --env-file=.env.local scripts/cgi-smoke.ts",
+    "cgi:bw": "tsx --env-file=.env.local scripts/cgi-bw.ts",
     "test:cgimenu": "tsx --env-file=.env.local test/cgi-menu.ts",
     "test:cgi": "tsx --env-file=.env.local test/cgi.ts",
     "test": "npm run test:virt && npm run test:admin && npm run test:dc && npm run test:cgi && npm run test:cgimenu"

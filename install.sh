@@ -14,7 +14,7 @@ set -uo pipefail
 cd /tmp 2>/dev/null || true
 
 # ───────────────────────────── Settings ─────────────────────────────
-INSTALLER_VERSION="1.0.0"
+INSTALLER_VERSION="1.1.0"
 DEFAULT_REPO="YOUR_GITHUB_USERNAME/vps-bot-next"   # ← replace with your own repo
 APP_USER="vpsbot"
 INSTALL_ROOT="/opt/vps-bot"
@@ -35,6 +35,9 @@ REPO="${VPSBOT_REPO:-$DEFAULT_REPO}"
 BRANCH="${VPSBOT_BRANCH:-main}"
 DOMAIN=""
 PORT="3000"
+CGI_AUTH_URL=""; CGI_APP_CRED_ID=""; CGI_APP_CRED_SECRET=""; CGI_SECURITY_GROUP="allow_all"
+CGI_LOCS=(paris nl lv fi)
+cgi_title() { case "$1" in paris) echo "🇫🇷 Paris";; nl) echo "🇳🇱 Netherlands";; lv) echo "🇱🇻 Latvia";; fi) echo "🇫🇮 Finland";; *) echo "$1";; esac; }
 
 # ───────────────────────────── Colors ─────────────────────────────
 if [[ -t 1 ]]; then
@@ -176,6 +179,27 @@ env_set() {
   cat "$tmp" >"$ENV_FILE"; rm -f "$tmp"
 }
 
+# Like env_set but keeps the value byte-for-byte (used for secrets; callers validate the characters first).
+env_put() {
+  local k="$1" v="$2" tmp; tmp="$(mktemp)"
+  grep -v "^${k}=" "$ENV_FILE" >"$tmp" 2>/dev/null || true
+  printf '%s="%s"\n' "$k" "$v" >>"$tmp"
+  cat "$tmp" >"$ENV_FILE"; rm -f "$tmp"
+}
+
+# prompt_secret VAR "Label"  — hidden input, only trims whitespace/CR; rejects characters that would corrupt .env.local
+prompt_secret() {
+  local __var="$1" label="$2" val
+  [[ -r /dev/tty ]] || die "No interactive terminal available."
+  while true; do
+    printf "  ${CYN}?${R} %s: " "$label"
+    IFS= read -rs val </dev/tty || exit 1; printf '\n'
+    val="$(printf '%s' "$val" | tr -d '\r\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    if [[ ${#val} -ge 8 && "$val" != *[\"\$\`\\[:space:]]* ]]; then printf -v "$__var" '%s' "$val"; return; fi
+    warn "At least 8 characters; no spaces, quotes, \$ or backslash."
+  done
+}
+
 public_ip() { curl -4fsS --max-time 6 https://api.ipify.org 2>/dev/null || curl -4fsS --max-time 6 https://ifconfig.me 2>/dev/null || true; }
 
 port_in_use() { ss -H -ltn "sport = :$1" 2>/dev/null | grep -q .; }
@@ -280,6 +304,125 @@ VPS_HOSTNAME_TEMPLATE="${VPS_HOSTNAME_TEMPLATE}"
 EOF
   chown "$APP_USER":"$APP_USER" "$ENV_FILE"
   chmod 600 "$ENV_FILE"
+}
+
+step_env_cgi() {
+  [[ -n "$CGI_APP_CRED_ID" ]] || return 0
+  env_put CGI_AUTH_URL "$CGI_AUTH_URL"
+  env_put CGI_APP_CRED_ID "$CGI_APP_CRED_ID"
+  env_put CGI_APP_CRED_SECRET "$CGI_APP_CRED_SECRET"
+  env_put CGI_SECURITY_GROUP "$CGI_SECURITY_GROUP"
+  env_put CGI_REGION "eu-north3"
+  chown "$APP_USER":"$APP_USER" "$ENV_FILE"; chmod 600 "$ENV_FILE"
+}
+
+cgi_configured() { [[ -n "$(env_get CGI_APP_CRED_ID)" && -n "$(env_get CGI_APP_CRED_SECRET)" && -n "$(env_get CGI_AUTH_URL)" ]]; }
+
+# HTTP status of a Keystone application-credential login (201 = good, 401 = rejected)
+cgi_auth_code() {
+  curl -s -o /dev/null -w '%{http_code}' --max-time 20 -H 'Content-Type: application/json' \
+    -d "{\"auth\":{\"identity\":{\"methods\":[\"application_credential\"],\"application_credential\":{\"id\":\"$2\",\"secret\":\"$3\"}}}}" \
+    "${1%/}/auth/tokens" 2>/dev/null || echo 000
+}
+
+# Asks for the HostVDS (OpenStack) credentials; leaving the ID empty skips CGI entirely.
+ask_cgi_credentials() {
+  local code
+  CGI_AUTH_URL="https://os-api.hostvds.com/identity/v3"; CGI_APP_CRED_ID=""; CGI_APP_CRED_SECRET=""; CGI_SECURITY_GROUP="allow_all"
+  info "Create it in Horizon: ${B}Identity → Application Credentials${R} (the secret is shown only once). Leave the ID empty to skip."
+  prompt CGI_APP_CRED_ID "Application Credential ID" "" '^([A-Za-z0-9-]{8,64})?$' "Letters, digits and dashes only (or leave empty)."
+  [[ -n "$CGI_APP_CRED_ID" ]] || { CGI_AUTH_URL=""; return 0; }
+  while true; do
+    prompt_secret CGI_APP_CRED_SECRET "Application Credential Secret (hidden)"
+    prompt CGI_AUTH_URL "Keystone URL" "$CGI_AUTH_URL" '^https?://[^ ]+$' "Enter a full URL, e.g. https://os-api.hostvds.com/identity/v3"
+    code="$(cgi_auth_code "$CGI_AUTH_URL" "$CGI_APP_CRED_ID" "$CGI_APP_CRED_SECRET")"
+    if [[ "$code" == "201" ]]; then ok "HostVDS login works"; break
+    elif [[ "$code" == "401" ]]; then warn "HostVDS rejected the credential (HTTP 401). Check the ID/secret."
+    else
+      warn "Could not verify (HTTP ${code}) — network/proxy?"
+      confirm "Use these values anyway?" n && break
+    fi
+    confirm "Re-enter the secret?" y || { CGI_APP_CRED_ID=""; CGI_AUTH_URL=""; return 0; }
+  done
+  prompt CGI_SECURITY_GROUP "Security group name (fully open in/out)" "$CGI_SECURITY_GROUP" '^[A-Za-z0-9._-]+$' "Letters, digits, . _ - only."
+}
+
+# Interactive CGI wiring: reads the account's regions, maps menu locations to regions, imports the catalog,
+# sets bandwidth prices and (optionally) runs a live test. Works on a fresh install and as `vpsbot cgi`.
+cgi_setup() {
+  cgi_configured || { warn "CGI credentials are not set. Run ${B}vpsbot${R} → Bot settings and fill CGI_* first."; return 1; }
+  local tmp; tmp="$(mktemp -d)"; chown "$APP_USER":"$APP_USER" "$tmp"
+  section "CGI (HostVDS) — locations, catalog, prices"
+  info "Reading the regions of your HostVDS account (about 30 seconds)…"
+  if ! app_run "npm run --silent cgi:regions -- --out '$tmp'"; then
+    err "Could not read the regions. Check the CGI_* values, then run: ${B}vpsbot cgi${R}"; rm -rf "$tmp"; return 1
+  fi
+  echo
+  info "Country comes from an IP lookup and is only a guess — verify before you accept."
+
+  local code region cand def ans map="" first="" used=" "
+  for code in "${CGI_LOCS[@]}"; do
+    cand="$(awk -F'\t' -v c="$code" '$1==c{print $2}' "$tmp/suggest.tsv")"
+    def="${cand%%,*}"; [[ -n "$def" ]] || def="-"
+    # a region can serve one menu location only: prefer an unused candidate
+    local c; for c in ${cand//,/ }; do [[ "$used" == *" $c "* ]] || { def="$c"; break; }; done
+    while true; do
+      printf "  ${D}%s candidates: %s${R}\n" "$(cgi_title "$code")" "${cand:-none found}"
+      prompt region "Region for $(cgi_title "$code")  ('-' hides this location)" "$def" '^(-|[A-Za-z0-9_-]+)$' "Region code like eu-west2, or - to hide."
+      if [[ "$region" == "-" ]]; then break; fi
+      if ! awk -F'\t' -v r="$region" '$1==r{f=1} END{exit !f}' "$tmp/regions.tsv"; then warn "'$region' is not one of the readable regions above."; continue; fi
+      if [[ "$used" == *" $region "* ]]; then warn "'$region' is already used by another location."; continue; fi
+      if awk -F'\t' -v r="$region" '$1==r && $4!=1{f=1} END{exit !f}' "$tmp/regions.tsv"; then
+        warn "'$region' does not have all of hostvds-1/2/4."; confirm "Use it anyway?" n || continue
+      fi
+      break
+    done
+    [[ "$region" == "-" ]] && continue
+    used+="$region "; map+="${map:+,}${code}=${region}"; [[ -n "$first" ]] || first="$region"
+  done
+  rm -rf "$tmp"
+  [[ -n "$map" ]] || { warn "No location mapped — the CGI buy menu will stay empty. Run ${B}vpsbot cgi${R} again later."; return 1; }
+  env_put CGI_REGION_MAP "$map"; env_put CGI_REGION "$first"
+  chown "$APP_USER":"$APP_USER" "$ENV_FILE"; chmod 600 "$ENV_FILE"
+  ok "Saved  CGI_REGION_MAP=${map}"
+
+  run_step "Importing the CGI catalog (plans, Ubuntu images, locations)" app_run "npm run --silent cgi:seed" || return 1
+
+  echo
+  info "Bandwidth prices decide what users pay per hour. A plan WITHOUT them stays hidden in the CGI menu."
+  info "Format: hourly price at 100 / 1000 / 10000 Mbps, e.g. ${B}2782/3154/3898${R} (monthly = hourly × 720). Empty = set later with /setbw."
+  local plan price
+  for plan in hostvds-1 hostvds-2 hostvds-4; do
+    prompt price "Bandwidth prices for ${plan}" "" '^([0-9]{1,9}/[0-9]{1,9}/[0-9]{1,9})?$' "Three numbers separated by /, or empty."
+    [[ -n "$price" ]] && { run_step "Saving bandwidth prices for ${plan}" app_run "npm run --silent cgi:bw -- ${plan} ${price}" || warn "Not saved — use /setbw ${plan} ${price} in the bot."; }
+  done
+
+  if systemctl is-active --quiet "$SERVICE" 2>/dev/null; then systemctl restart "$SERVICE" && ok "Bot restarted with the new CGI settings."; fi
+
+  echo
+  warn "The live test creates ONE real server on HostVDS (small hourly cost) to prove ordering works end to end."
+  if confirm "Run the live create test now?" n; then
+    local out; out="$(mktemp)"
+    app_run "npm run --silent cgi:smoke -- create" 2>&1 | tee "$out"
+    local sid; sid="$(grep -o 'delete [0-9]\+' "$out" | tail -1 | awk '{print $2}')"; rm -f "$out"
+    if [[ -n "$sid" ]] && confirm "Delete the test server #${sid} now?" y; then
+      app_run "npm run --silent cgi:smoke -- delete ${sid}" || warn "Delete failed — run: cd $APP_DIR && npm run cgi:smoke -- delete ${sid}"
+    fi
+  fi
+  return 0
+}
+
+do_cgi() {
+  need_root
+  is_installed || { err "Not installed."; return 1; }
+  load_meta
+  if ! cgi_configured; then
+    info "CGI is not configured yet."
+    ask_cgi_credentials
+    [[ -n "$CGI_APP_CRED_ID" ]] || { info "Skipped."; return 0; }
+    step_env_cgi
+  fi
+  cgi_setup
 }
 
 step_npm_install() { app_run "npm ci --no-audit --no-fund || npm install --no-audit --no-fund"; }
@@ -488,6 +631,9 @@ do_install() {
     confirm "Does the panel use a self-signed / invalid SSL certificate?" n && VIRT_INSECURE="1"
   fi
 
+  section "International servers — CGI (HostVDS / OpenStack)"
+  ask_cgi_credentials
+
   PORT=3000; while port_in_use "$PORT"; do PORT=$((PORT + 1)); done
   WEBHOOK_SECRET="$(openssl rand -hex 24)"
   CRON_SECRET="$(openssl rand -hex 24)"
@@ -499,6 +645,7 @@ do_install() {
   printf "  %-18s %s\n" "Domain"     "https://${DOMAIN}"
   printf "  %-18s %s\n" "Repository" "$(repo_url) (${BRANCH})"
   printf "  %-18s %s\n" "Virtualizor" "${VIRT_URL:-not configured (set later)}"
+  printf "  %-18s %s\n" "CGI HostVDS" "$([[ -n "$CGI_APP_CRED_ID" ]] && echo "configured (locations are mapped in the next step)" || echo "not configured (run: vpsbot cgi later)")"
   printf "  %-18s %s\n" "App port"   "127.0.0.1:${PORT}"
   printf "  %-18s %s\n" "Install dir" "$APP_DIR"
   echo
@@ -513,9 +660,14 @@ do_install() {
   run_step "Setting up PostgreSQL database"                            step_database || return 1
   run_step "Downloading project from GitHub"                           step_clone    || { warn "Check that VPSBOT_REPO ('$REPO') exists and is public."; return 1; }
   run_step "Writing configuration (.env.local)"                        step_env      || return 1
+  run_step "Writing CGI configuration"                                 step_env_cgi  || return 1
   save_meta
   run_step "Installing dependencies (npm)"                             step_npm_install || return 1
   run_step "Creating database tables"                                  step_migrate  || return 1
+  if [[ -n "$CGI_APP_CRED_ID" ]]; then
+    cgi_setup || warn "CGI setup is incomplete — finish it any time with: ${B}vpsbot cgi${R}"
+    echo; section "Installing"
+  fi
   run_step "Building the application (this can take a few minutes)"    step_build    || return 1
   run_step "Registering systemd services + billing timer"              step_systemd  || return 1
   run_step "Configuring nginx reverse proxy"                           step_nginx    || return 1
@@ -540,7 +692,10 @@ do_install() {
   printf "  ${B}Manage${R}    run ${CYN}vpsbot${R} anywhere to open this menu\n"
   printf "  ${B}Logs${R}      ${CYN}vpsbot logs${R}\n\n"
   printf "  ${D}Open your bot in Telegram, send /start, then use the ${R}${B}🛠 Admin Panel${R}${D} button.${R}\n"
-  printf "  ${D}Don't forget: edit service prices/plans and wire up src/lib/provider.ts to your VPS provider.${R}\n"
+  if [[ -n "$CGI_APP_CRED_ID" ]]; then
+    printf "  ${D}International (CGI): test the buy menu as a user. Bandwidth prices: /bw and /setbw in the bot. Re-run the wizard: ${R}${CYN}vpsbot cgi${R}\n"
+  fi
+  printf "  ${D}Iran (Virtualizor): define locations/OS in the bot with /addloc and /addos (see: vpsbot virt).${R}\n"
 }
 
 # ───────────────────────────── Update ─────────────────────────────
@@ -575,6 +730,13 @@ do_update() {
   fi
   run_step "Installing dependencies"        step_npm_install || return 1
   run_step "Applying database migrations"   step_migrate     || return 1
+  if cgi_configured; then
+    if [[ -z "$(env_get CGI_REGION_MAP)" ]]; then
+      warn "CGI is configured but locations are not mapped yet — run: ${B}vpsbot cgi${R}"
+    else
+      run_step "Refreshing the CGI catalog"  app_run "npm run --silent cgi:seed" || warn "CGI catalog refresh failed (see $LOG_FILE)."
+    fi
+  fi
   run_step "Building the application"       step_build       || return 1
   run_step "Restarting the bot"             systemctl restart "$SERVICE" || return 1
   run_step "Refreshing the 'vpsbot' command" step_command
@@ -643,19 +805,20 @@ settings_menu() {
   need_root
   is_installed || { err "Not installed."; pause; return; }
   load_meta
-  local keys=(BOT_TOKEN ADMIN_IDS SUPPORT_USERNAME CARD_NUMBER CARD_OWNER MIN_TOPUP MIN_BALANCE_TO_BUY REF_PERCENT VIRT_URL VIRT_API_KEY VIRT_API_PASS VIRT_INSECURE_TLS VIRT_USER_PREFIX VIRT_USER_DOMAIN VIRT_USER_START VPS_HOSTNAME_TEMPLATE)
-  local labels=("Bot token" "Admin IDs" "Support username" "Card number" "Card owner" "Minimum top-up" "Minimum balance to buy" "Referral percent" "Virtualizor URL" "Virtualizor API key" "Virtualizor API pass" "Self-signed SSL (1/0)" "Panel user e-mail prefix" "Panel user e-mail domain" "First user number" "VPS hostname template")
+  local keys=(BOT_TOKEN ADMIN_IDS SUPPORT_USERNAME CARD_NUMBER CARD_OWNER MIN_TOPUP MIN_BALANCE_TO_BUY REF_PERCENT VIRT_URL VIRT_API_KEY VIRT_API_PASS VIRT_INSECURE_TLS VIRT_USER_PREFIX VIRT_USER_DOMAIN VIRT_USER_START VPS_HOSTNAME_TEMPLATE CGI_AUTH_URL CGI_APP_CRED_ID CGI_APP_CRED_SECRET CGI_SECURITY_GROUP CGI_REGION CGI_REGION_MAP)
+  local labels=("Bot token" "Admin IDs" "Support username" "Card number" "Card owner" "Minimum top-up" "Minimum balance to buy" "Referral percent" "Virtualizor URL" "Virtualizor API key" "Virtualizor API pass" "Self-signed SSL (1/0)" "Panel user e-mail prefix" "Panel user e-mail domain" "First user number" "VPS hostname template" "CGI Keystone URL" "CGI credential ID" "CGI credential secret" "CGI security group" "CGI default region" "CGI location→region map")
   while true; do
     banner; section "Bot settings"
     local i v
     for i in "${!keys[@]}"; do
       v="$(env_get "${keys[$i]}")"
       [[ "${keys[$i]}" == BOT_TOKEN ]] && v="${v%%:*}:••••••••"
-      [[ "${keys[$i]}" == VIRT_API_* && -n "$v" ]] && v="${v:0:4}••••••••"
+      [[ ( "${keys[$i]}" == VIRT_API_* || "${keys[$i]}" == CGI_APP_CRED_SECRET ) && -n "$v" ]] && v="${v:0:4}••••••••"
       printf "   ${CYN}%d${R}  %-24s ${D}%s${R}\n" "$((i + 1))" "${labels[$i]}" "$v"
     done
     printf "   ${CYN}e${R}  Edit .env.local in nano\n"
     printf "   ${CYN}v${R}  Test Virtualizor connection / list node & OS IDs\n"
+    printf "   ${CYN}c${R}  CGI wizard (read regions, map locations, import catalog, bandwidth prices)\n"
     printf "   ${CYN}s${R}  Retry SSL certificate\n"
     printf "   ${CYN}0${R}  Back\n\n"
     printf "  ${B}Select${R} ▸ "; read -r c </dev/tty || return
@@ -664,14 +827,15 @@ settings_menu() {
       [0-9]|1[0-9]|2[0-9])
         (( c >= 1 && c <= ${#keys[@]} )) || continue
         local k="${keys[$((c - 1))]}" nv
-        prompt nv "New value for ${labels[$((c - 1))]}" "" '.+' "Cannot be empty."
-        env_set "$k" "$nv"
+        if [[ "$k" == CGI_APP_CRED_SECRET ]]; then prompt_secret nv "New value for ${labels[$((c - 1))]} (hidden)"; env_put "$k" "$nv"
+        else prompt nv "New value for ${labels[$((c - 1))]}" "" '.+' "Cannot be empty."; env_set "$k" "$nv"; fi
         systemctl restart "$SERVICE" && ok "Saved and restarted."
         [[ "$k" == BOT_TOKEN ]] && do_webhook
         pause ;;
       e|E) command -v nano >/dev/null || apt-get install -y nano >/dev/null 2>&1
          nano "$ENV_FILE"; systemctl restart "$SERVICE" && ok "Restarted."; pause ;;
       v|V) do_virt; pause ;;
+      c|C) do_cgi; pause ;;
       s|S) DOMAIN="${DOMAIN}"; SSL_EMAIL=""; run_step "Issuing SSL certificate" step_ssl && do_webhook; pause ;;
     esac
   done
@@ -760,6 +924,7 @@ Usage: vpsbot [command]
   logs           follow live logs
   webhook        re-register the Telegram webhook
   virt           test the Virtualizor connection and list node/OS IDs
+  cgi            CGI (HostVDS) wizard: regions → locations, catalog import, bandwidth prices, live test
   backup         dump the database to ${BACKUP_DIR}
   uninstall      remove the bot
 EOF
@@ -781,6 +946,7 @@ case "${1:-menu}" in
   logs)           show_logs ;;
   webhook)        do_webhook ;;
   virt)           do_virt ;;
+  cgi)            do_cgi ;;
   backup)         do_backup ;;
   uninstall)      do_uninstall ;;
   -h|--help|help) usage ;;
