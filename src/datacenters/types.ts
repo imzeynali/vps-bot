@@ -31,6 +31,8 @@ export interface DatacenterProvider {
   readonly region: Region;
   /** آیا کد اتصال (API) کامل پیاده‌سازی شده؟ false = «به‌زودی» */
   readonly implemented: boolean;
+  /** وضعیت پیش‌فرض در منوی خرید (پیش‌فرض: روشن). دیتاسنتر در دست توسعه با false مخفی می‌ماند تا ادمین از پنل روشنش کند. */
+  readonly defaultEnabled?: boolean;
 
   /** تنظیمات محیطی (آدرس/کلید API) برای اتصال کافی است؟ */
   isConfigured(): boolean;

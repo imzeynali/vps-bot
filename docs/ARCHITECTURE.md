@@ -32,6 +32,7 @@ datacenters/
   registry.ts       ثبت و جستجوی دیتاسنترها، روشن/خاموش، تشخیص دیتاسنتر هر سرویس
   index.ts          ثبت همه‌ی دیتاسنترها (نقطه‌ی افزودن)
   virtualizor/      🇮🇷 ایران (api.ts = کلاینت پنل، service.ts = منطق سرویس، index.ts = provider)
+  hcloud3/          🌍 بین‌الملل — 3HCloud/OpenStack (اسکلت؛ در دست توسعه، پیش‌فرض خاموش)
   cgi/              🌍 بین‌الملل — HostVDS/OpenStack (http.ts = Keystone+HTTP، openstack.ts = Nova/Neutron، seed.ts = ورود کاتالوگ)
 ```
 
@@ -76,3 +77,16 @@ npm run test:dc   # جداسازی دیتاسنترها
 - **کاتالوگ:** `npm run cgi:seed` فلورها، Ubuntu 20/22/24 و ۴ لوکیشن را می‌ریزد (`CGI_REGION_MAP` نگاشت ریجن). فقط `hostvds-1/2/4` فعال و قیمت‌دار می‌شوند؛ قیمت‌های ادمین بازنویسی نمی‌شود.
 - **ابزارها:** `npm run cgi:regions` (ریجن‌ها و کشور تقریبی)، `npm run cgi:smoke -- create [os] [region] [network]` (سرور واقعی) و `... delete <id>`.
 - Cinder و Floating IP استفاده نمی‌شود.
+
+## دیتاسنتر 3HCloud (OpenStack) — در دست توسعه
+وضعیت: اسکلت آماده (`src/datacenters/hcloud3/`)، `implemented=false` و `defaultEnabled=false` (در منوی خرید دیده نمی‌شود تا ادمین از «🌐 دیتاسنترها» روشن کند).
+یافته‌های مستندات (3hcloud.com/docs):
+- **دسترسی API:** «کاربر API» با یوزرنیم/پسورد (حداکثر ۱۰ کاربر؛ پسورد فقط هنگام ساخت نمایش داده می‌شود؛ فایل RC قابل دانلود) — مستندات به OpenStack API ارجاع می‌دهد. احراز هویت: Keystone v3 با پسورد.
+- **ریجن/زون:** Miami (MIA-1)، Dallas (DFW-1)، San Francisco (SFO-1)، Warsaw (WAW-1، WAW-2)، Manila (MNL-1)، Almaty (زون نامشخص). سهمیه در سطح ریجن؛ منابع زون‌دار (سرور/volume/شبکه) باید در یک زون باشند.
+- **Keystone جدا برای هر ریجن** (طبق فایل‌های RC): `identity.api.os.<mia|dfw|sfo|waw|ala|mnl>.3hcloud.com`؛ کاربر API و پروژه در همه‌ی ریجن‌ها یکی است، ولی توکن هر ریجن جدا گرفته می‌شود (برخلاف CGI/HostVDS که یک توکن برای همه‌ی ریجن‌ها دارد). `OS_AUTH_URL` پسوند `/v3` ندارد و کلاینت آن را اضافه می‌کند. جدول ریجن‌ها: `src/datacenters/hcloud3/regions.ts`.
+- **ساخت:** vCPU/RAM + «volume سیستمی» (اندازه و نوع جدا و جدا پول دارد) ← بوت از volume (Cinder، `block_device_mapping_v2`، حذف همراه سرور). شبکه: «external network» با IPv4/IPv6 به‌ازای حساب/ریجن؛ آی‌پی روی پورت است.
+- **پورت جداگانه با حذف سرور پاک نمی‌شود و IPv4 آن همچنان پول می‌گیرد** ← حذف پورت توسط ربات الزامی است (مثل CGI).
+- **بازنصب OS ممکن نیست** (فقط حذف و ساخت دوباره) ← `rebuild` پشتیبانی نمی‌شود.
+- **خاموش کردن (SHUTOFF) صورتحساب را قطع نمی‌کند** ← تعلیق سرویس هزینه‌ی دیتاسنتر را قطع نمی‌کند (نیازمند سیاست حذف خودکار پس از مهلت).
+- **وضعیت‌ها:** ACTIVE / SHUTOFF؛ ریبوت نرم و سخت.
+مرحله‌ی بعد: `npm run hc3:discover` (فقط‌خواندنی؛ AZ، فلور، ایمیج، نوع volume، شبکه، گروه امنیتی، QoS، سهمیه) ← پیاده‌سازی `provision/power/remove/...` با تست روی شبیه‌ساز.

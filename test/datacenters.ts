@@ -33,7 +33,9 @@ async function main() {
   t("registry: virtualizor (ir) و cgi (intl) ثبت شده‌اند", async () => {
     assert.equal(DC.getDatacenter("virtualizor")?.region, "ir");
     assert.equal(DC.getDatacenter("cgi")?.region, "intl");
-    assert.deepEqual(DC.listDatacenters("intl").map((d) => d.id), ["cgi"]);
+    assert.deepEqual(DC.listDatacenters("intl").map((d) => d.id), ["cgi", "hcloud3"]);
+    assert.equal(await DC.isEnabled("hcloud3"), false); // در دست توسعه: پیش‌فرض مخفی
+    assert.equal(await DC.isEnabled("cgi"), true);
     assert.throws(() => DC.registerDatacenter(DC.getDatacenter("cgi")!), /تکراری/);
   });
 

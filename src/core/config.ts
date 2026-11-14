@@ -50,6 +50,18 @@ export const config = {
     buildTimeoutMs: num(process.env.CGI_BUILD_TIMEOUT_MS, 240000), // سقف انتظار تا ACTIVE شدن سرور
     pollMs: num(process.env.CGI_POLL_MS, 3000), // فاصله‌ی پولینگ وضعیت
   },
+  // ── دیتاسنتر 3HCloud (بین‌الملل) — OpenStack؛ «کاربر API» (یوزرنیم/پسورد) از پنل: Account ← Access ← API ──
+  // هر ریجن Keystone جداگانه دارد؛ آدرس‌ها در src/datacenters/hcloud3/regions.ts است (قابل بازنویسی با HC3_AUTH_URLS)
+  hc3: {
+    username: (process.env.HC3_USERNAME ?? "").trim(),
+    password: process.env.HC3_PASSWORD ?? "",
+    projectId: (process.env.HC3_PROJECT_ID ?? "").trim(),
+    projectName: (process.env.HC3_PROJECT_NAME ?? "").trim(),
+    userDomain: (process.env.HC3_USER_DOMAIN ?? "Default").trim(),
+    projectDomain: (process.env.HC3_PROJECT_DOMAIN ?? "default").trim(),
+    authOverride: (process.env.HC3_AUTH_URLS ?? "").trim(), // "dallas=https://...,warsaw=https://..."
+    timeoutMs: num(process.env.HC3_TIMEOUT_MS, 30000),
+  },
   // دامنه‌ی hostname سرورها: s<ID>.<vpsDomain>
   vpsDomain: (process.env.VPS_DOMAIN || hostOf(process.env.APP_URL) || "vps.local").toLowerCase(),
   // الگوی hostname: {n} شماره (مثلاً 1001) ، {id} شناسه سرویس ، {domain} دامنه بالا
