@@ -5,6 +5,7 @@ import { queryOne } from "@/lib/db";
 import { esc, reportError, stamp } from "@/lib/adminGroup";
 import { registerStart } from "./handlers/start";
 import { registerBuy } from "./handlers/buy";
+import { registerPremiumEmoji } from "./premiumEmoji";
 import { registerBuyCgi } from "./handlers/buyCgi";
 import { registerServices } from "./handlers/services";
 import { registerWallet } from "./handlers/wallet";
@@ -38,6 +39,7 @@ function createBot(): Bot<BotContext> {
   });
 
   registerStart(bot);
+  registerPremiumEmoji(bot); // شناسه‌ی ایموجی پرمیوم (/setemoji /emoji)
   registerAdmin(bot);
   registerAdminVirt(bot); // قبل از registerAdminPanel (فالبک adm:*)
   registerAdminCatalog(bot); // پلن/لوکیشن/OS/تنظیمات از داخل پنل ادمین

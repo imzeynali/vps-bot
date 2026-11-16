@@ -14,7 +14,7 @@ set -uo pipefail
 cd /tmp 2>/dev/null || true
 
 # ───────────────────────────── Settings ─────────────────────────────
-INSTALLER_VERSION="1.1.1"
+INSTALLER_VERSION="1.2.0"
 DEFAULT_REPO="YOUR_GITHUB_USERNAME/vps-bot-next"   # ← replace with your own repo
 APP_USER="vpsbot"
 INSTALL_ROOT="/opt/vps-bot"
@@ -37,6 +37,10 @@ DOMAIN=""
 PORT="3000"
 CGI_AUTH_URL=""; CGI_APP_CRED_ID=""; CGI_APP_CRED_SECRET=""; CGI_SECURITY_GROUP="allow_all"
 CGI_LOCS=(paris nl lv fi)
+H3C_AUTH_URL=""; H3C_USERNAME=""; H3C_PASSWORD=""; H3C_USER_DOMAIN="Default"; H3C_PROJECT=""; H3C_PROJECT_DOMAIN="Default"
+H3C_LOCS=(mia dfw sfo waw ala mnl)
+h3c_default_region() { case "$1" in mia) echo Miami;; dfw) echo Dallas;; sfo) echo SanFrancisco;; waw) echo Warsaw;; ala) echo Almaty;; mnl) echo Manila;; *) echo "-";; esac; }
+h3c_title() { case "$1" in mia) echo "🇺🇸 Miami";; dfw) echo "🇺🇸 Dallas";; sfo) echo "🇺🇸 San Francisco";; waw) echo "🇵🇱 Warsaw";; ala) echo "🇰🇿 Almaty";; mnl) echo "🇵🇭 Manila";; *) echo "$1";; esac; }
 cgi_title() { case "$1" in paris) echo "🇫🇷 Paris";; nl) echo "🇳🇱 Netherlands";; lv) echo "🇱🇻 Latvia";; fi) echo "🇫🇮 Finland";; *) echo "$1";; esac; }
 
 # ───────────────────────────── Colors ─────────────────────────────
@@ -434,6 +438,115 @@ do_cgi() {
   cgi_setup
 }
 
+step_env_h3c() {
+  [[ -n "$H3C_USERNAME" ]] || return 0
+  [[ -n "$H3C_AUTH_URL" ]] && env_put H3C_AUTH_URL "$H3C_AUTH_URL"
+  env_put H3C_USERNAME "$H3C_USERNAME"
+  env_put H3C_PASSWORD "$H3C_PASSWORD"
+  env_put H3C_USER_DOMAIN "$H3C_USER_DOMAIN"
+  env_put H3C_PROJECT "$H3C_PROJECT"
+  env_put H3C_PROJECT_DOMAIN "$H3C_PROJECT_DOMAIN"
+  chown "$APP_USER":"$APP_USER" "$ENV_FILE"; chmod 600 "$ENV_FILE"
+}
+
+h3c_configured() { [[ -n "$(env_get H3C_USERNAME)" && -n "$(env_get H3C_PASSWORD)" && -n "$(env_get H3C_PROJECT)" ]]; }
+
+# HTTP status of a Keystone password login scoped to the project (201 = good, 401 = rejected)
+h3c_auth_code() {
+  local proj="{\"name\":\"$5\",\"domain\":{\"name\":\"$6\"}}"
+  [[ "$5" =~ ^[0-9a-fA-F]{32}$ ]] && proj="{\"id\":\"$5\"}"
+  curl -s -o /dev/null -w '%{http_code}' --max-time 20 -H 'Content-Type: application/json' \
+    -d "{\"auth\":{\"identity\":{\"methods\":[\"password\"],\"password\":{\"user\":{\"name\":\"$2\",\"domain\":{\"name\":\"$4\"},\"password\":\"$3\"}}},\"scope\":{\"project\":$proj}}}" \
+    "${1%/}/auth/tokens" 2>/dev/null || echo 000
+}
+
+# Asks for the 3HCloud API user. The SAME user/password/project works in every region (each region has its own Keystone,
+# https://identity.api.os.<code>.3hcloud.com — the installer derives it). Values come from any region's RC file. Empty username skips.
+ask_h3c_credentials() {
+  local code
+  H3C_AUTH_URL=""; H3C_USERNAME=""; H3C_PASSWORD=""; H3C_USER_DOMAIN="Default"; H3C_PROJECT=""; H3C_PROJECT_DOMAIN="Default"
+  info "Create an API user in the 3HCloud panel (${B}Account → Access → API → Create user${R}); the password is shown only once."
+  info "Open any region's ${B}RC file${R}: OS_USERNAME and OS_PROJECT_ID are the same in all regions. Leave the username empty to skip."
+  prompt H3C_USERNAME "API username (OS_USERNAME)" "" '^([A-Za-z0-9@._-]{2,128})?$' "Letters, digits and @ . _ - only (or leave empty)."
+  [[ -n "$H3C_USERNAME" ]] || return 0
+  while true; do
+    prompt_secret H3C_PASSWORD "API password (hidden)"
+    prompt H3C_PROJECT "Project ID (OS_PROJECT_ID, 32 characters) or project name" "$H3C_PROJECT" '^[A-Za-z0-9@._ -]{1,128}$' "Letters, digits, spaces and @ . _ - only."
+    if [[ ! "$H3C_PROJECT" =~ ^[0-9a-fA-F]{32}$ ]]; then
+      prompt H3C_USER_DOMAIN "User domain (OS_USER_DOMAIN_NAME)" "$H3C_USER_DOMAIN" '^[A-Za-z0-9._-]{1,64}$' "Letters, digits and . _ - only."
+      prompt H3C_PROJECT_DOMAIN "Project domain name" "$H3C_PROJECT_DOMAIN" '^[A-Za-z0-9._-]{1,64}$' "Letters, digits and . _ - only."
+    fi
+    code="$(h3c_auth_code "https://identity.api.os.mia.3hcloud.com/v3" "$H3C_USERNAME" "$H3C_PASSWORD" "$H3C_USER_DOMAIN" "$H3C_PROJECT" "$H3C_PROJECT_DOMAIN")"
+    if [[ "$code" == "201" ]]; then ok "3HCloud login works (checked against Miami)"; break
+    elif [[ "$code" == "401" ]]; then warn "3HCloud rejected the login (HTTP 401). Check username/password/project."
+    else
+      warn "Could not verify (HTTP ${code}) — network problem?"
+      confirm "Use these values anyway?" n && break
+    fi
+    confirm "Try again?" y || { H3C_USERNAME=""; return 0; }
+  done
+}
+
+# 3HCloud wiring: shows what the account has (regions, flavors, networks, disk types), maps menu locations to Region[/Zone],
+# imports the catalog and (optionally) runs a live test. Works on a fresh install and as `vpsbot h3c`.
+h3c_setup() {
+  h3c_configured || { warn "3HCloud credentials are not set. Run ${B}vpsbot h3c${R} to enter them."; return 1; }
+  section "3HCloud — regions, catalog"
+  info "Reading your 3HCloud account…"
+  if ! app_run "npm run --silent h3c:discover"; then
+    err "Could not read the account. Check the H3C_* values, then run: ${B}vpsbot h3c${R}"; return 1
+  fi
+  echo
+  info "Each location maps to a region name (OS_REGION_NAME). Press Enter to accept the default; '-' hides a location. Optional zone: ${B}Region/Zone${R}."
+  local code ref map="" first="" net sg vt
+  for code in "${H3C_LOCS[@]}"; do
+    prompt ref "Region for $(h3c_title "$code")  ('-' hides it)" "$(h3c_default_region "$code")" '^(-|[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)?)$' "Use Region or Region/Zone, or - to hide."
+    [[ "$ref" == "-" ]] && continue
+    map+="${map:+,}${code}=${ref}"; [[ -n "$first" ]] || first="${ref%%/*}"
+  done
+  [[ -n "$map" ]] || { warn "No location mapped — the 3HCloud menu stays empty. Run ${B}vpsbot h3c${R} again later."; return 1; }
+  env_put H3C_REGION_MAP "$map"; env_put H3C_REGION "$first"
+  prompt net "Public (external) network name — empty = auto-detect router:external" "$(env_get H3C_NETWORK)" '^([A-Za-z0-9._ -]{1,64})?$' "Letters, digits, spaces and . _ - only."
+  [[ -n "$net" ]] && env_put H3C_NETWORK "$net"
+  prompt sg "Security group (fully open in/out; create it in Virtual firewalls)" "$(env_get H3C_SECURITY_GROUP || true)" '^([A-Za-z0-9._-]{1,64})?$' "Letters, digits and . _ - only."
+  env_put H3C_SECURITY_GROUP "${sg:-allow_all}"
+  prompt vt "System disk type (see 'disk types' above) — empty = default" "$(env_get H3C_VOLUME_TYPE)" '^([A-Za-z0-9._ -]{1,64})?$' "Letters, digits, spaces and . _ - only."
+  [[ -n "$vt" ]] && env_put H3C_VOLUME_TYPE "$vt"
+  chown "$APP_USER":"$APP_USER" "$ENV_FILE"; chmod 600 "$ENV_FILE"
+  ok "Saved  H3C_REGION_MAP=${map}"
+
+  run_step "Importing the 3HCloud catalog (plans, Ubuntu images, locations)" app_run "npm run --silent h3c:seed" || return 1
+  info "Plans are created ${B}inactive${R}: set their hourly price in the bot's admin panel (or H3C_PRICES=name=price,… then vpsbot h3c)."
+
+  if systemctl is-active --quiet "$SERVICE" 2>/dev/null; then systemctl restart "$SERVICE" && ok "Bot restarted with the new 3HCloud settings."; fi
+
+  echo
+  warn "The live test creates ONE real server on 3HCloud (small hourly cost) to prove ordering works end to end."
+  if confirm "Run the live create test now?" n; then
+    local out; out="$(mktemp)"
+    app_run "npm run --silent h3c:smoke -- create" 2>&1 | tee "$out"
+    local sid; sid="$(grep -o 'delete [0-9]\+' "$out" | tail -1 | awk '{print $2}')"; rm -f "$out"
+    if [[ -n "$sid" ]] && confirm "Delete the test server #${sid} now?" y; then
+      app_run "npm run --silent h3c:smoke -- delete ${sid}" || warn "Delete failed — run: cd $APP_DIR && npm run h3c:smoke -- delete ${sid}"
+    fi
+  fi
+  return 0
+}
+
+do_h3c() {
+  need_root
+  is_installed || { err "Not installed."; return 1; }
+  load_meta
+  fix_perms
+  if ! h3c_configured; then
+    info "3HCloud is not configured yet."
+    ask_h3c_credentials
+    [[ -n "$H3C_USERNAME" ]] || { info "Skipped."; return 0; }
+    step_env_h3c
+  fi
+  h3c_setup
+}
+
 step_npm_install() { app_run "npm ci --no-audit --no-fund || npm install --no-audit --no-fund"; }
 step_migrate()     { app_run "npm run migrate"; }
 step_build()       { app_run "npm run build"; }
@@ -643,6 +756,9 @@ do_install() {
   section "International servers — CGI (HostVDS / OpenStack)"
   ask_cgi_credentials
 
+  section "International servers — 3HCloud (OpenStack)"
+  ask_h3c_credentials
+
   PORT=3000; while port_in_use "$PORT"; do PORT=$((PORT + 1)); done
   WEBHOOK_SECRET="$(openssl rand -hex 24)"
   CRON_SECRET="$(openssl rand -hex 24)"
@@ -655,6 +771,7 @@ do_install() {
   printf "  %-18s %s\n" "Repository" "$(repo_url) (${BRANCH})"
   printf "  %-18s %s\n" "Virtualizor" "${VIRT_URL:-not configured (set later)}"
   printf "  %-18s %s\n" "CGI HostVDS" "$([[ -n "$CGI_APP_CRED_ID" ]] && echo "configured (locations are mapped in the next step)" || echo "not configured (run: vpsbot cgi later)")"
+  printf "  %-18s %s\n" "3HCloud"     "$([[ -n "$H3C_USERNAME" ]] && echo "configured (locations are mapped in the next step)" || echo "not configured (run: vpsbot h3c later)")"
   printf "  %-18s %s\n" "App port"   "127.0.0.1:${PORT}"
   printf "  %-18s %s\n" "Install dir" "$APP_DIR"
   echo
@@ -670,11 +787,16 @@ do_install() {
   run_step "Downloading project from GitHub"                           step_clone    || { warn "Check that VPSBOT_REPO ('$REPO') exists and is public."; return 1; }
   run_step "Writing configuration (.env.local)"                        step_env      || return 1
   run_step "Writing CGI configuration"                                 step_env_cgi  || return 1
+  run_step "Writing 3HCloud configuration"                             step_env_h3c  || return 1
   save_meta
   run_step "Installing dependencies (npm)"                             step_npm_install || return 1
   run_step "Creating database tables"                                  step_migrate  || return 1
   if [[ -n "$CGI_APP_CRED_ID" ]]; then
     cgi_setup || warn "CGI setup is incomplete — finish it any time with: ${B}vpsbot cgi${R}"
+    echo; section "Installing"
+  fi
+  if [[ -n "$H3C_USERNAME" ]]; then
+    h3c_setup || warn "3HCloud setup is incomplete — finish it any time with: ${B}vpsbot h3c${R}"
     echo; section "Installing"
   fi
   run_step "Building the application (this can take a few minutes)"    step_build    || return 1
@@ -747,6 +869,13 @@ do_update() {
       run_step "Refreshing the CGI catalog"  app_run "npm run --silent cgi:seed" || warn "CGI catalog refresh failed (see $LOG_FILE)."
     fi
   fi
+  if h3c_configured; then
+    if [[ -z "$(env_get H3C_REGION_MAP)" ]]; then
+      warn "3HCloud is configured but locations are not mapped yet — run: ${B}vpsbot h3c${R}"
+    else
+      run_step "Refreshing the 3HCloud catalog" app_run "npm run --silent h3c:seed" || warn "3HCloud catalog refresh failed (see $LOG_FILE)."
+    fi
+  fi
   run_step "Building the application"       step_build       || return 1
   run_step "Restarting the bot"             systemctl restart "$SERVICE" || return 1
   run_step "Refreshing the 'vpsbot' command" step_command
@@ -815,29 +944,30 @@ settings_menu() {
   need_root
   is_installed || { err "Not installed."; pause; return; }
   load_meta
-  local keys=(BOT_TOKEN ADMIN_IDS SUPPORT_USERNAME CARD_NUMBER CARD_OWNER MIN_TOPUP MIN_BALANCE_TO_BUY REF_PERCENT VIRT_URL VIRT_API_KEY VIRT_API_PASS VIRT_INSECURE_TLS VIRT_USER_PREFIX VIRT_USER_DOMAIN VIRT_USER_START VPS_HOSTNAME_TEMPLATE CGI_AUTH_URL CGI_APP_CRED_ID CGI_APP_CRED_SECRET CGI_SECURITY_GROUP CGI_REGION CGI_REGION_MAP)
-  local labels=("Bot token" "Admin IDs" "Support username" "Card number" "Card owner" "Minimum top-up" "Minimum balance to buy" "Referral percent" "Virtualizor URL" "Virtualizor API key" "Virtualizor API pass" "Self-signed SSL (1/0)" "Panel user e-mail prefix" "Panel user e-mail domain" "First user number" "VPS hostname template" "CGI Keystone URL" "CGI credential ID" "CGI credential secret" "CGI security group" "CGI default region" "CGI location→region map")
+  local keys=(BOT_TOKEN ADMIN_IDS SUPPORT_USERNAME CARD_NUMBER CARD_OWNER MIN_TOPUP MIN_BALANCE_TO_BUY REF_PERCENT VIRT_URL VIRT_API_KEY VIRT_API_PASS VIRT_INSECURE_TLS VIRT_USER_PREFIX VIRT_USER_DOMAIN VIRT_USER_START VPS_HOSTNAME_TEMPLATE CGI_AUTH_URL CGI_APP_CRED_ID CGI_APP_CRED_SECRET CGI_SECURITY_GROUP CGI_REGION CGI_REGION_MAP H3C_AUTH_URL H3C_USERNAME H3C_PASSWORD H3C_PROJECT H3C_USER_DOMAIN H3C_PROJECT_DOMAIN H3C_REGION_MAP H3C_NETWORK H3C_SECURITY_GROUP H3C_VOLUME_TYPE H3C_PRICES)
+  local labels=("Bot token" "Admin IDs" "Support username" "Card number" "Card owner" "Minimum top-up" "Minimum balance to buy" "Referral percent" "Virtualizor URL" "Virtualizor API key" "Virtualizor API pass" "Self-signed SSL (1/0)" "Panel user e-mail prefix" "Panel user e-mail domain" "First user number" "VPS hostname template" "CGI Keystone URL" "CGI credential ID" "CGI credential secret" "CGI security group" "CGI default region" "CGI location→region map" "3HCloud Keystone URL template ({code})" "3HCloud API username" "3HCloud API password" "3HCloud project" "3HCloud user domain" "3HCloud project domain" "3HCloud location→region map" "3HCloud public network" "3HCloud security group" "3HCloud disk type" "3HCloud flavor prices")
   while true; do
     banner; section "Bot settings"
     local i v
     for i in "${!keys[@]}"; do
       v="$(env_get "${keys[$i]}")"
       [[ "${keys[$i]}" == BOT_TOKEN ]] && v="${v%%:*}:••••••••"
-      [[ ( "${keys[$i]}" == VIRT_API_* || "${keys[$i]}" == CGI_APP_CRED_SECRET ) && -n "$v" ]] && v="${v:0:4}••••••••"
+      [[ ( "${keys[$i]}" == VIRT_API_* || "${keys[$i]}" == CGI_APP_CRED_SECRET || "${keys[$i]}" == H3C_PASSWORD ) && -n "$v" ]] && v="${v:0:4}••••••••"
       printf "   ${CYN}%d${R}  %-24s ${D}%s${R}\n" "$((i + 1))" "${labels[$i]}" "$v"
     done
     printf "   ${CYN}e${R}  Edit .env.local in nano\n"
     printf "   ${CYN}v${R}  Test Virtualizor connection / list node & OS IDs\n"
+    printf "   ${CYN}h${R}  3HCloud wizard (read account, map locations, import catalog)\n"
     printf "   ${CYN}c${R}  CGI wizard (read regions, map locations, import catalog, bandwidth prices)\n"
     printf "   ${CYN}s${R}  Retry SSL certificate\n"
     printf "   ${CYN}0${R}  Back\n\n"
     printf "  ${B}Select${R} ▸ "; read -r c </dev/tty || return
     case "$c" in
       0|"") return ;;
-      [0-9]|1[0-9]|2[0-9])
+      [0-9]|[1-9][0-9])
         (( c >= 1 && c <= ${#keys[@]} )) || continue
         local k="${keys[$((c - 1))]}" nv
-        if [[ "$k" == CGI_APP_CRED_SECRET ]]; then prompt_secret nv "New value for ${labels[$((c - 1))]} (hidden)"; env_put "$k" "$nv"
+        if [[ "$k" == CGI_APP_CRED_SECRET || "$k" == H3C_PASSWORD ]]; then prompt_secret nv "New value for ${labels[$((c - 1))]} (hidden)"; env_put "$k" "$nv"
         else prompt nv "New value for ${labels[$((c - 1))]}" "" '.+' "Cannot be empty."; env_set "$k" "$nv"; fi
         systemctl restart "$SERVICE" && ok "Saved and restarted."
         [[ "$k" == BOT_TOKEN ]] && do_webhook
@@ -846,6 +976,7 @@ settings_menu() {
          nano "$ENV_FILE"; systemctl restart "$SERVICE" && ok "Restarted."; pause ;;
       v|V) do_virt; pause ;;
       c|C) do_cgi; pause ;;
+      h|H) do_h3c; pause ;;
       s|S) DOMAIN="${DOMAIN}"; SSL_EMAIL=""; run_step "Issuing SSL certificate" step_ssl && do_webhook; pause ;;
     esac
   done
@@ -935,6 +1066,7 @@ Usage: vpsbot [command]
   webhook        re-register the Telegram webhook
   virt           test the Virtualizor connection and list node/OS IDs
   cgi            CGI (HostVDS) wizard: regions → locations, catalog import, bandwidth prices, live test
+  h3c            3HCloud wizard: read account → locations (Region/Zone), catalog import, live test
   backup         dump the database to ${BACKUP_DIR}
   uninstall      remove the bot
 EOF
@@ -957,6 +1089,7 @@ case "${1:-menu}" in
   webhook)        do_webhook ;;
   virt)           do_virt ;;
   cgi)            do_cgi ;;
+  h3c)            do_h3c ;;
   backup)         do_backup ;;
   uninstall)      do_uninstall ;;
   -h|--help|help) usage ;;

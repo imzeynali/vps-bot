@@ -50,17 +50,25 @@ export const config = {
     buildTimeoutMs: num(process.env.CGI_BUILD_TIMEOUT_MS, 240000), // سقف انتظار تا ACTIVE شدن سرور
     pollMs: num(process.env.CGI_POLL_MS, 3000), // فاصله‌ی پولینگ وضعیت
   },
-  // ── دیتاسنتر 3HCloud (بین‌الملل) — OpenStack؛ «کاربر API» (یوزرنیم/پسورد) از پنل: Account ← Access ← API ──
-  // هر ریجن Keystone جداگانه دارد؛ آدرس‌ها در src/datacenters/hcloud3/regions.ts است (قابل بازنویسی با HC3_AUTH_URLS)
-  hc3: {
-    username: (process.env.HC3_USERNAME ?? "").trim(),
-    password: process.env.HC3_PASSWORD ?? "",
-    projectId: (process.env.HC3_PROJECT_ID ?? "").trim(),
-    projectName: (process.env.HC3_PROJECT_NAME ?? "").trim(),
-    userDomain: (process.env.HC3_USER_DOMAIN ?? "Default").trim(),
-    projectDomain: (process.env.HC3_PROJECT_DOMAIN ?? "default").trim(),
-    authOverride: (process.env.HC3_AUTH_URLS ?? "").trim(), // "dallas=https://...,warsaw=https://..."
-    timeoutMs: num(process.env.HC3_TIMEOUT_MS, 30000),
+  // ── دیتاسنتر 3HCloud (بین‌الملل) — OpenStack با کاربر API (نام‌کاربری/رمز؛ مقادیر فایل RC پنل) ──
+  h3c: {
+    // هر ریجن Keystone مخصوص خود را دارد: {code} با کد ریجن (mia dfw sfo waw ala mnl) جایگزین می‌شود
+    authUrl: (process.env.H3C_AUTH_URL || "https://identity.api.os.{code}.3hcloud.com").trim().replace(/\/+$/, ""),
+    authUrls: process.env.H3C_AUTH_URLS ?? "", // (اختیاری) جایگزینی دستی: "Dallas=https://...,Miami=https://..."
+    username: (process.env.H3C_USERNAME ?? "").trim(),
+    password: process.env.H3C_PASSWORD ?? "",
+    userDomain: (process.env.H3C_USER_DOMAIN ?? "Default").trim(),
+    project: (process.env.H3C_PROJECT ?? "").trim(), // نام یا شناسه‌ی پروژه (OS_PROJECT_NAME / OS_PROJECT_ID)
+    projectDomain: (process.env.H3C_PROJECT_DOMAIN ?? "Default").trim(),
+    region: (process.env.H3C_REGION ?? "").trim(), // ریجن پیش‌فرض برای خواندن کاتالوگ
+    network: (process.env.H3C_NETWORK ?? "").trim(), // نام شبکه‌ی خارجی (اگر خالی: شبکه‌های router:external)
+    securityGroup: (process.env.H3C_SECURITY_GROUP ?? "allow_all").trim(),
+    volumeType: (process.env.H3C_VOLUME_TYPE ?? "").trim(), // نوع دیسک سیستم (Cinder)؛ خالی = پیش‌فرض
+    diskGb: num(process.env.H3C_DISK_GB, 40), // اندازه‌ی دیسک سیستم برای پلن‌هایی که فلورشان دیسک ندارد
+    novaVersion: (process.env.H3C_NOVA_MICROVERSION ?? "2.79").trim(),
+    timeoutMs: num(process.env.H3C_TIMEOUT_MS, 30000),
+    buildTimeoutMs: num(process.env.H3C_BUILD_TIMEOUT_MS, 600000), // ساخت از روی volume کندتر است
+    pollMs: num(process.env.H3C_POLL_MS, 4000),
   },
   // دامنه‌ی hostname سرورها: s<ID>.<vpsDomain>
   vpsDomain: (process.env.VPS_DOMAIN || hostOf(process.env.APP_URL) || "vps.local").toLowerCase(),

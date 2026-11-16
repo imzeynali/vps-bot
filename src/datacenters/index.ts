@@ -7,7 +7,7 @@
 import { registerDatacenter } from "./registry";
 import { virtualizorDatacenter } from "./virtualizor";
 import { cgiDatacenter } from "./cgi";
-import { hcloud3Datacenter } from "./hcloud3";
+import { h3cDatacenter } from "./h3c";
 
 const g = globalThis as unknown as { __dcRegistered?: boolean };
 if (!g.__dcRegistered) {
@@ -15,7 +15,7 @@ if (!g.__dcRegistered) {
   g.__dcRegistered = true;
   registerDatacenter(virtualizorDatacenter); // 🇮🇷 ایران
   registerDatacenter(cgiDatacenter); // 🌍 بین‌الملل
-  registerDatacenter(hcloud3Datacenter); // 🌍 بین‌الملل (در دست توسعه؛ پیش‌فرض خاموش)
+  registerDatacenter(h3cDatacenter); // 🌍 بین‌الملل (3HCloud)
 }
 
 export * from "./registry";

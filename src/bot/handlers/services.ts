@@ -27,12 +27,9 @@ const getOwnActive = (userId: number, id: number) =>
 function serviceKb(id: number, s?: ServiceRow) {
   const kb = new InlineKeyboard();
   if (s && s.billing_mode === "monthly" && s.trial && !s.trial_issue) kb.text("⚠️ گزارش مشکل (دوره تست)", `svcprob:${id}`).row();
+  kb.text("▶️ روشن", `pw:${id}:on`).text("⏹ خاموش", `pw:${id}:off`).row().text("🔄 ریبوت", `pw:${id}:reboot`);
+  if (s?.datacenter !== "h3c") kb.text("🛠 ریبیلد", `rb:${id}`); // 3HCloud نصب مجدد OS ندارد
   return kb
-    .text("▶️ روشن", `pw:${id}:on`)
-    .text("⏹ خاموش", `pw:${id}:off`)
-    .row()
-    .text("🔄 ریبوت", `pw:${id}:reboot`)
-    .text("🛠 ریبیلد", `rb:${id}`)
     .row()
     .text("🗑 حذف سرور", `del:${id}`)
     .row()

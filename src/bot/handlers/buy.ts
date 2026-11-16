@@ -10,6 +10,7 @@ import { alert, esc, fmt, planButton, show, specText, uid } from "../helpers";
 import { backKb } from "../keyboards";
 import { getSettings } from "@/lib/settings";
 import { codes, payerInfo, report, stamp } from "@/lib/adminGroup";
+import { locButton, withPremiumFallback } from "../premiumEmoji";
 import { getDatacenter, isEnabled, isPurchasable, listDatacenters } from "@/datacenters";
 
 interface Loc {
@@ -32,17 +33,20 @@ const getOs = (key: string) =>
 export function registerBuy(bot: Bot<BotContext>) {
   bot.callbackQuery("buy", async (ctx) => {
     // ایران: لوکیشن‌های دیتاسنتر Virtualizor؛ بین‌الملل: انتخاب دیتاسنتر (هرکدام مستقل)
-    const kb = new InlineKeyboard();
+    const allLocs: Loc[] = [];
     for (const dc of listDatacenters("ir")) {
       if (!(await isEnabled(dc.id))) continue;
-      const locs = await query<Loc>("SELECT key, title, datacenter FROM locations WHERE active AND datacenter=$1 ORDER BY key", [dc.id]);
-      for (const l of locs) kb.text(l.title, `loc:${l.key}`).row();
+      allLocs.push(...(await query<Loc>("SELECT key, title, datacenter FROM locations WHERE active AND datacenter=$1 ORDER BY key", [dc.id])));
     }
     let hasIntl = false;
     for (const dc of listDatacenters("intl")) if (await isEnabled(dc.id)) hasIntl = true;
-    if (hasIntl) kb.text("🌍 بین‌الملل", "intl").row();
-    kb.text("🔙 منوی اصلی", "home");
-    await show(ctx, "🌍 <b>لوکیشن سرور را انتخاب کنید:</b>", kb);
+    await withPremiumFallback(ctx.api as never, async (emojiId) => {
+      const kb = new InlineKeyboard();
+      for (const l of allLocs) locButton(kb, l.title, `loc:${l.key}`, emojiId).row();
+      if (hasIntl) kb.text("🌍 بین‌الملل", "intl").row();
+      kb.text("🔙 منوی اصلی", "home");
+      await show(ctx, "🌍 <b>لوکیشن سرور را انتخاب کنید:</b>", kb);
+    });
   });
 
   // ── بین‌الملل: انتخاب دیتاسنتر (مستقل از Virtualizor) ──
@@ -60,10 +64,12 @@ export function registerBuy(bot: Bot<BotContext>) {
     // دیتاسنتر آماده: لوکیشن‌های همان دیتاسنتر ← همان جریان استاندارد (سیستم‌عامل ← پلن ← خرید)
     const locs = await query<Loc>("SELECT key, title, datacenter FROM locations WHERE active AND datacenter=$1 ORDER BY key", [dc.id]);
     if (locs.length === 0) return alert(ctx, `برای ${dc.title} هنوز لوکیشنی تعریف نشده است.`);
-    const kb = new InlineKeyboard();
-    for (const l of locs) kb.text(l.title, `loc:${l.key}`).row();
-    kb.text("⬅️ بازگشت", "intl");
-    await show(ctx, `🌍 <b>${esc(dc.title)}</b>\n\nلوکیشن را انتخاب کنید:`, kb);
+    await withPremiumFallback(ctx.api as never, async (emojiId) => {
+      const kb = new InlineKeyboard();
+      for (const l of locs) locButton(kb, l.title, `loc:${l.key}`, emojiId).row();
+      kb.text("⬅️ بازگشت", "intl");
+      await show(ctx, `🌍 <b>${esc(dc.title)}</b>\n\nلوکیشن را انتخاب کنید:`, kb);
+    });
   });
 
   bot.callbackQuery(/^loc:(\w+)$/, async (ctx) => {

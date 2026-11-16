@@ -18,6 +18,7 @@ export interface ServiceRow {
   user_id: number;
   plan_id: number;
   location: string | null;
+  datacenter?: string;
   os: string | null;
   ip: string | null;
   login_user: string | null;
