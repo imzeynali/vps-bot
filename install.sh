@@ -14,7 +14,7 @@ set -uo pipefail
 cd /tmp 2>/dev/null || true
 
 # ───────────────────────────── Settings ─────────────────────────────
-INSTALLER_VERSION="1.2.0"
+INSTALLER_VERSION="1.2.2"
 DEFAULT_REPO="YOUR_GITHUB_USERNAME/vps-bot-next"   # ← replace with your own repo
 APP_USER="vpsbot"
 INSTALL_ROOT="/opt/vps-bot"
@@ -460,6 +460,39 @@ h3c_auth_code() {
     "${1%/}/auth/tokens" 2>/dev/null || echo 000
 }
 
+# Each 3HCloud region has its own Keystone; some may be unreachable from this server (HTTP 403 from their nginx).
+# Sets H3C_OK to the space-separated codes that answer HTTP 200 (credentials are NOT sent).
+H3C_OK=""
+h3c_probe_regions() {
+  local c name code
+  H3C_OK=" "
+  info "Checking which 3HCloud regions are reachable from this server…"
+  for c in "${H3C_LOCS[@]}"; do
+    name="$(h3c_default_region "$c")"
+    code="$(curl -s -o /dev/null -m 12 -w '%{http_code}' "https://identity.api.os.${c}.3hcloud.com/v3" 2>/dev/null || echo 000)"
+    if [[ "$code" == "200" ]]; then H3C_OK+="$c "; printf "    ${GRN}✔${R} %-13s reachable\n" "$name"
+    else printf "    ${RED}✘${R} %-13s HTTP %s (blocked or unreachable from this server)\n" "$name" "$code"; fi
+  done
+}
+
+# Explains a non-201/401 login result: is the Keystone endpoint reachable at all from this server (no credentials sent)?
+h3c_probe() {
+  local u="https://identity.api.os.mia.3hcloud.com/v3" f; f="$(mktemp)"
+  local c1 c2
+  c1="$(curl -s -m 15 -o "$f" -w '%{http_code}' "$u" 2>/dev/null || echo 000)"
+  c2="$(curl -s -m 15 -o /dev/null -w '%{http_code}' -A 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36' "$u" 2>/dev/null || echo 000)"
+  info "Probe without credentials: GET ${u} → HTTP ${c1} (browser User-Agent: HTTP ${c2})"
+  [[ -s "$f" ]] && info "Response: $(head -c 200 "$f" | tr '\n' ' ')"
+  rm -f "$f"
+  if [[ "$c1" == "200" ]]; then
+    warn "The endpoint is reachable, so only the login itself is refused — re-check username, password and project ID."
+  elif [[ "$c1" == "403" || "$c2" == "403" ]]; then
+    warn "403 even without credentials: this server's IP (or curl) is blocked by 3HCloud's firewall/WAF. Try from another network, or ask 3HCloud support to allow this server's IP."
+  elif [[ "$c1" == "000" ]]; then
+    warn "No answer: DNS or outbound connection to identity.api.os.mia.3hcloud.com is blocked from this server."
+  fi
+}
+
 # Asks for the 3HCloud API user. The SAME user/password/project works in every region (each region has its own Keystone,
 # https://identity.api.os.<code>.3hcloud.com — the installer derives it). Values come from any region's RC file. Empty username skips.
 ask_h3c_credentials() {
@@ -476,12 +509,19 @@ ask_h3c_credentials() {
       prompt H3C_USER_DOMAIN "User domain (OS_USER_DOMAIN_NAME)" "$H3C_USER_DOMAIN" '^[A-Za-z0-9._-]{1,64}$' "Letters, digits and . _ - only."
       prompt H3C_PROJECT_DOMAIN "Project domain name" "$H3C_PROJECT_DOMAIN" '^[A-Za-z0-9._-]{1,64}$' "Letters, digits and . _ - only."
     fi
-    code="$(h3c_auth_code "https://identity.api.os.mia.3hcloud.com/v3" "$H3C_USERNAME" "$H3C_PASSWORD" "$H3C_USER_DOMAIN" "$H3C_PROJECT" "$H3C_PROJECT_DOMAIN")"
-    if [[ "$code" == "201" ]]; then ok "3HCloud login works (checked against Miami)"; break
+    [[ "$H3C_OK" == " " || -z "$H3C_OK" ]] && h3c_probe_regions
+    local rc; rc="$(echo $H3C_OK | awk '{print $1}')"
+    if [[ -z "$rc" ]]; then
+      warn "No 3HCloud region is reachable from this server (see list above). Ask 3HCloud support to allow this server's IP: $(curl -s -m 6 https://api.ipify.org 2>/dev/null)"
+      confirm "Save the credentials anyway and continue?" y && break
+      H3C_USERNAME=""; return 0
+    fi
+    code="$(h3c_auth_code "https://identity.api.os.${rc}.3hcloud.com/v3" "$H3C_USERNAME" "$H3C_PASSWORD" "$H3C_USER_DOMAIN" "$H3C_PROJECT" "$H3C_PROJECT_DOMAIN")"
+    if [[ "$code" == "201" ]]; then ok "3HCloud login works (checked against $(h3c_default_region "$rc"))"; break
     elif [[ "$code" == "401" ]]; then warn "3HCloud rejected the login (HTTP 401). Check username/password/project."
     else
-      warn "Could not verify (HTTP ${code}) — network problem?"
-      confirm "Use these values anyway?" n && break
+      warn "Could not verify (HTTP ${code})."
+      confirm "Use these values anyway? (the bot will report the exact error later with: npm run h3c:discover)" n && break
     fi
     confirm "Try again?" y || { H3C_USERNAME=""; return 0; }
   done
@@ -497,10 +537,12 @@ h3c_setup() {
     err "Could not read the account. Check the H3C_* values, then run: ${B}vpsbot h3c${R}"; return 1
   fi
   echo
-  info "Each location maps to a region name (OS_REGION_NAME). Press Enter to accept the default; '-' hides a location. Optional zone: ${B}Region/Zone${R}."
+  h3c_probe_regions
+  info "Each location maps to a region name (OS_REGION_NAME). Enter accepts the default; unreachable regions default to '-' (hidden). Optional zone: ${B}Region/Zone${R}."
   local code ref map="" first="" net sg vt
   for code in "${H3C_LOCS[@]}"; do
-    prompt ref "Region for $(h3c_title "$code")  ('-' hides it)" "$(h3c_default_region "$code")" '^(-|[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)?)$' "Use Region or Region/Zone, or - to hide."
+    local dref; dref="$(h3c_default_region "$code")"; [[ "$H3C_OK" == *" $code "* ]] || dref="-"
+    prompt ref "Region for $(h3c_title "$code")  ('-' hides it)" "$dref" '^(-|[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)?)$' "Use Region or Region/Zone, or - to hide."
     [[ "$ref" == "-" ]] && continue
     map+="${map:+,}${code}=${ref}"; [[ -n "$first" ]] || first="${ref%%/*}"
   done

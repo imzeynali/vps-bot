@@ -66,7 +66,11 @@ async function authenticate(region: string): Promise<Session> {
   } catch (e) {
     throw new H3cError(`اتصال به Keystone ${region} برقرار نشد: ` + (e instanceof Error ? e.message : e), "network");
   }
-  if (r.status !== 201) throw new H3cError(`احراز هویت 3HCloud (${region}) ناموفق (HTTP ${r.status})`, "auth", r.status);
+  if (r.status !== 201) {
+    // بدنه‌ی پاسخ (مثلاً صفحه‌ی بلاک WAF) برای عیب‌یابی؛ رمز هرگز در پاسخ نیست
+    const snippet = (await r.text().catch(() => "")).replace(/\s+/g, " ").slice(0, 160);
+    throw new H3cError(`احراز هویت 3HCloud (${region}) ناموفق (HTTP ${r.status})${snippet ? ": " + snippet : ""}`, "auth", r.status);
+  }
   const token = r.headers.get("x-subject-token");
   const body = (await r.json()) as { token?: { expires_at?: string; catalog?: Session["catalog"] } };
   if (!token || !body.token) throw new H3cError("پاسخ Keystone نامعتبر است", "auth", r.status);
