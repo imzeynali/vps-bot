@@ -5,7 +5,7 @@ export {};
  * اجرا: npm run h3c:discover   (قبلش H3C_* در .env.local باشد)
  */
 async function main() {
-  const { isConfigured, KNOWN_REGIONS, authUrlFor, call } = await import("../src/datacenters/h3c/http");
+  const { isConfigured, KNOWN_REGIONS, authUrlFor, call, catalog } = await import("../src/datacenters/h3c/http");
   const OS = await import("../src/datacenters/h3c/openstack");
   if (!isConfigured()) throw new Error("H3C_USERNAME / H3C_PASSWORD / H3C_PROJECT را در .env.local بگذارید");
   // هر ریجن Keystone جدا دارد؛ ریجن‌های شناخته‌شده + ریجن‌های نگاشت‌شده بررسی می‌شوند
@@ -21,6 +21,13 @@ async function main() {
         return null;
       }
     };
+    const cat = await safe("کاتالوگ", () => catalog(region));
+    if (cat) {
+      console.log("  آدرس سرویس‌ها: " + cat.map((c) => `${c.type}=${c.endpoints.filter((e) => e.interface === "public").map((e) => { try { return new URL(e.url).host; } catch { return e.url; } }).join("|")}`).join("  "));
+    } else {
+      console.log("");
+      continue; // احراز هویت این ریجن ممکن نیست؛ بقیه‌ی بررسی‌ها بی‌معناست
+    }
     const l = await safe("سهمیه", () => OS.limits(region));
     if (l) console.log(`  سهمیه: سرور ${l.instances[0]}/${l.instances[1]} | هسته ${l.cores[0]}/${l.cores[1]} | رم ${Math.round(l.ramMb[0] / 1024)}/${Math.round(l.ramMb[1] / 1024)}GB`);
     const fl = await safe("فلورها", () => OS.listFlavors(region));

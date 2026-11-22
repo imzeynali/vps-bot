@@ -148,8 +148,9 @@ export async function call<T = Record<string, any>>(service: Service, method: st
     const s = await session(region);
     const qs = opts.query ? "?" + new URLSearchParams(opts.query).toString() : "";
     let r: Response;
+    const url = endpoint(s, service, region) + path + qs;
     try {
-      r = await fetch(endpoint(s, service, region) + path + qs, {
+      r = await fetch(url, {
         method,
         headers: {
           "X-Auth-Token": s.token,
@@ -185,6 +186,10 @@ export async function call<T = Record<string, any>>(service: Service, method: st
     }
     if (r.status >= 200 && r.status < 300) return { status: r.status, json: json as T };
     const pe = parseError(json);
-    throw new H3cError(`${service} ${method} ${path} → HTTP ${r.status}${pe.message ? ": " + pe.message : ""}`, "http", r.status, pe.type);
+    // اگر پاسخ JSON نبود (مثلاً صفحه‌ی 403 فایروال) خلاصه‌ی بدنه و میزبان را برای عیب‌یابی نشان بده
+    const raw = pe.message ? "" : text.replace(/\s+/g, " ").slice(0, 160);
+    let host = "";
+    try { host = new URL(url).host; } catch { /* */ }
+    throw new H3cError(`${service} ${method} ${path} → HTTP ${r.status}${pe.message ? ": " + pe.message : raw ? ": " + raw : ""}${host ? ` [${host}]` : ""}`, "http", r.status, pe.type);
   }
 }
