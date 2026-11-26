@@ -4,11 +4,11 @@
 روی سرور (با کاربر root) فقط یک دستور بزنید و مراحل منوی انگلیسی را دنبال کنید
 (`OWNER/REPO` را با آدرس گیت‌هاب خودتان عوض کنید):
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/OWNER/REPO/main/install.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/imzeynali/vps-bot/main/install.sh)
 ```
 اگر با `sudo` اجرا می‌کنید این فرم مطمئن‌تر است:
 ```bash
-sudo bash -c "$(curl -Ls https://raw.githubusercontent.com/OWNER/REPO/main/install.sh)"
+sudo bash -c "$(curl -Ls https://raw.githubusercontent.com/imzeynali/vps-bot/main/install.sh)"
 ```
 نصب‌کننده خودکار این موارد را انجام می‌دهد: Node.js 22، PostgreSQL، Nginx، SSL رایگان (Let's Encrypt)،
 ساخت دیتابیس و جدول‌ها، build، سرویس systemd، تایمر صورتحساب هر دقیقه و ثبت وبهوک تلگرام.
