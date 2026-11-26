@@ -83,6 +83,19 @@ export const config = {
     buildTimeoutMs: num(process.env.VIRTUA_BUILD_TIMEOUT_MS, 480000),
     pollMs: num(process.env.VIRTUA_POLL_MS, 4000),
   },
+  // ── دیتاسنتر UpCloud (بین‌الملل) — API با توکن Bearer (ucat_…) ──
+  upcloud: {
+    apiUrl: (process.env.UPCLOUD_API_URL || "https://api.upcloud.com/1.3").trim().replace(/\/+$/, ""),
+    token: (process.env.UPCLOUD_TOKEN ?? "").trim(),
+    /** زون‌هایی که لوکیشن می‌شوند (جدا با کاما)؛ فقط زون‌های موجود در حساب ساخته می‌شوند */
+    zones: (process.env.UPCLOUD_ZONES || "fi-hel1,de-fra1,nl-ams1,uk-lon1,us-nyc1,sg-sin1,pl-waw1,es-mad1").split(",").map((z) => z.trim()).filter(Boolean),
+    /** userdata: پسورد ربات با cloud-init (user_data) ثبت می‌شود؛ api: پسورد ساخته‌شده‌ی UpCloud از پاسخ ساخت خوانده می‌شود */
+    passwordMode: (process.env.UPCLOUD_PASSWORD_MODE === "api" ? "api" : "userdata") as "api" | "userdata",
+    tier: (process.env.UPCLOUD_TIER || "maxiops").trim(),
+    timeoutMs: num(process.env.UPCLOUD_TIMEOUT_MS, 30000),
+    buildTimeoutMs: num(process.env.UPCLOUD_BUILD_TIMEOUT_MS, 360000),
+    pollMs: num(process.env.UPCLOUD_POLL_MS, 4000),
+  },
   // دامنه‌ی hostname سرورها: s<ID>.<vpsDomain>
   vpsDomain: (process.env.VPS_DOMAIN || hostOf(process.env.APP_URL) || "vps.local").toLowerCase(),
   // الگوی hostname: {n} شماره (مثلاً 1001) ، {id} شناسه سرویس ، {domain} دامنه بالا

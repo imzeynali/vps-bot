@@ -14,7 +14,7 @@ set -uo pipefail
 cd /tmp 2>/dev/null || true
 
 # ───────────────────────────── Settings ─────────────────────────────
-INSTALLER_VERSION="1.3.1"
+INSTALLER_VERSION="1.4.0"
 DEFAULT_REPO="YOUR_GITHUB_USERNAME/vps-bot-next"   # ← replace with your own repo
 APP_USER="vpsbot"
 INSTALL_ROOT="/opt/vps-bot"
@@ -39,6 +39,7 @@ CGI_AUTH_URL=""; CGI_APP_CRED_ID=""; CGI_APP_CRED_SECRET=""; CGI_SECURITY_GROUP=
 CGI_LOCS=(paris nl lv fi)
 H3C_AUTH_URL=""; H3C_USERNAME=""; H3C_PASSWORD=""; H3C_USER_DOMAIN="Default"; H3C_PROJECT=""; H3C_PROJECT_DOMAIN="Default"
 VIRTUA_API_KEY=""
+UPCLOUD_TOKEN=""
 H3C_LOCS=(mia dfw sfo waw ala mnl)
 h3c_default_region() { case "$1" in mia) echo Miami;; dfw) echo Dallas;; sfo) echo SanFrancisco;; waw) echo Warsaw;; ala) echo Almaty;; mnl) echo Manila;; *) echo "-";; esac; }
 h3c_title() { case "$1" in mia) echo "🇺🇸 Miami";; dfw) echo "🇺🇸 Dallas";; sfo) echo "🇺🇸 San Francisco";; waw) echo "🇵🇱 Warsaw";; ala) echo "🇰🇿 Almaty";; mnl) echo "🇵🇭 Manila";; *) echo "$1";; esac; }
@@ -670,6 +671,85 @@ do_virtua() {
   virtua_setup
 }
 
+step_env_upcloud() {
+  [[ -n "$UPCLOUD_TOKEN" ]] || return 0
+  env_put UPCLOUD_TOKEN "$UPCLOUD_TOKEN"
+  chown "$APP_USER":"$APP_USER" "$ENV_FILE"; chmod 600 "$ENV_FILE"
+}
+
+upcloud_configured() { [[ -n "$(env_get UPCLOUD_TOKEN)" ]]; }
+
+# HTTP status of GET /1.3/account with the API token (200 = good, 401/403 = rejected)
+upcloud_auth_code() {
+  curl -s -o /dev/null -w '%{http_code}' --max-time 20 -H "Authorization: Bearer $1" "https://api.upcloud.com/1.3/account" 2>/dev/null || echo 000
+}
+
+ask_upcloud_credentials() {
+  local code
+  UPCLOUD_TOKEN=""
+  info "UpCloud: create an API token in the Hub: ${B}Account → API tokens${R} (starts with ${B}ucat_${R}, shown only once)."
+  info "If you restrict the token to IP addresses, allow THIS server's IP: $(curl -s -m 6 https://api.ipify.org 2>/dev/null)"
+  while true; do
+    prompt_secret UPCLOUD_TOKEN "UpCloud API token (hidden)"
+    code="$(upcloud_auth_code "$UPCLOUD_TOKEN")"
+    if [[ "$code" == "200" ]]; then ok "UpCloud login works"; break
+    elif [[ "$code" == "401" || "$code" == "403" ]]; then warn "UpCloud rejected the token (HTTP ${code}). Check the token and its IP restriction."
+    else
+      warn "Could not verify (HTTP ${code}) — network problem?"
+      confirm "Use this token anyway?" n && break
+    fi
+    confirm "Try again?" y || { UPCLOUD_TOKEN=""; return 0; }
+  done
+}
+
+# UpCloud wiring: shows the account (credit, zones, plans, Ubuntu templates, raw field names), maps zones, imports the catalog,
+# optionally runs a live test. Works on a fresh install and as `vpsbot upcloud`.
+upcloud_setup() {
+  upcloud_configured || { warn "UpCloud token is not set. Run ${B}vpsbot upcloud${R}."; return 1; }
+  section "UpCloud — account, catalog"
+  info "Reading your UpCloud account…"
+  app_run "npm run --silent upcloud:discover" || { err "Could not read the account. Check UPCLOUD_TOKEN (and its IP restriction), then run: ${B}vpsbot upcloud${R}"; return 1; }
+  echo
+  local zones mode
+  prompt zones "Zones to sell (comma separated; see the list above)" "$(env_get UPCLOUD_ZONES || true)" '^([a-z0-9,-]{3,200})?$' "Zone ids like fi-hel1,de-fra1 separated by commas (or leave empty for the default list)."
+  [[ -n "$zones" ]] && env_put UPCLOUD_ZONES "$zones"
+  prompt mode "Root password mode: userdata (bot password via cloud-init) or api (UpCloud generates it)" "$(env_get UPCLOUD_PASSWORD_MODE || true)" '^(userdata|api)?$' "Type userdata or api."
+  env_put UPCLOUD_PASSWORD_MODE "${mode:-userdata}"
+  chown "$APP_USER":"$APP_USER" "$ENV_FILE"; chmod 600 "$ENV_FILE"
+
+  run_step "Importing the UpCloud catalog (plans, Ubuntu templates, zones)" app_run "npm run --silent upcloud:seed" || return 1
+  info "Plans are created ${B}inactive${R}: set their hourly price in the bot's admin panel ${B}only after${R} the live test below succeeds."
+  warn "The docs say cloud-init templates are normally SSH-key only. The live test proves root password login works; if it does not, try the other password mode (vpsbot upcloud)."
+
+  if systemctl is-active --quiet "$SERVICE" 2>/dev/null; then systemctl restart "$SERVICE" && ok "Bot restarted with the new UpCloud settings."; fi
+
+  echo
+  warn "The live test creates ONE real server on UpCloud (small hourly cost; it is stopped and deleted afterwards)."
+  if confirm "Run the live create test now?" n; then
+    local out; out="$(mktemp)"
+    app_run "npm run --silent upcloud:smoke -- create" 2>&1 | tee "$out"
+    local sid; sid="$(grep -o 'delete [0-9]\+' "$out" | tail -1 | awk '{print $2}')"; rm -f "$out"
+    if [[ -n "$sid" ]] && confirm "Delete the test server #${sid} now?" y; then
+      app_run "npm run --silent upcloud:smoke -- delete ${sid}" || warn "Delete failed — run: cd $APP_DIR && npm run upcloud:smoke -- delete ${sid}"
+    fi
+  fi
+  return 0
+}
+
+do_upcloud() {
+  need_root
+  is_installed || { err "Not installed."; return 1; }
+  load_meta
+  fix_perms
+  if ! upcloud_configured; then
+    info "UpCloud is not configured yet."
+    ask_upcloud_credentials
+    [[ -n "$UPCLOUD_TOKEN" ]] || { info "Skipped."; return 0; }
+    step_env_upcloud
+  fi
+  upcloud_setup
+}
+
 step_npm_install() { app_run "npm ci --no-audit --no-fund || npm install --no-audit --no-fund"; }
 step_migrate()     { app_run "npm run migrate"; }
 step_build()       { app_run "npm run build"; }
@@ -882,13 +962,14 @@ do_install() {
 
   section "International providers (all optional)"
   info "Choose which providers to set up now. Skipped ones stay hidden from users; add them any time later with:"
-  info "${B}vpsbot cgi${R}  |  ${B}vpsbot h3c${R}  |  ${B}vpsbot virtua${R}"
-  printf "   ${CYN}1${R}  CGI (HostVDS)\n   ${CYN}2${R}  3HCloud\n   ${CYN}3${R}  Virtua.Cloud\n"
+  info "${B}vpsbot cgi${R}  |  ${B}vpsbot h3c${R}  |  ${B}vpsbot virtua${R}  |  ${B}vpsbot upcloud${R}"
+  printf "   ${CYN}1${R}  CGI (HostVDS)\n   ${CYN}2${R}  3HCloud\n   ${CYN}3${R}  Virtua.Cloud\n   ${CYN}4${R}  UpCloud\n"
   local PICK=""
-  prompt PICK "Numbers separated by commas (e.g. 1,3) — Enter = skip all" "" '^([1-3](,[1-3])*)?$' "Use numbers 1-3 separated by commas (e.g. 1,3), or leave empty to skip all."
+  prompt PICK "Numbers separated by commas (e.g. 1,3) — Enter = skip all" "" '^([1-4](,[1-4])*)?$' "Use numbers 1-4 separated by commas (e.g. 1,3), or leave empty to skip all."
   if [[ ",$PICK," == *,1,* ]]; then section "International servers — CGI (HostVDS / OpenStack)"; ask_cgi_credentials; else ok "CGI skipped"; fi
   if [[ ",$PICK," == *,2,* ]]; then section "International servers — 3HCloud (OpenStack)"; ask_h3c_credentials; else ok "3HCloud skipped"; fi
   if [[ ",$PICK," == *,3,* ]]; then section "International servers — Virtua.Cloud"; ask_virtua_credentials; else ok "Virtua.Cloud skipped"; fi
+  if [[ ",$PICK," == *,4,* ]]; then section "International servers — UpCloud"; ask_upcloud_credentials; else ok "UpCloud skipped"; fi
 
   PORT=3000; while port_in_use "$PORT"; do PORT=$((PORT + 1)); done
   WEBHOOK_SECRET="$(openssl rand -hex 24)"
@@ -904,6 +985,7 @@ do_install() {
   printf "  %-18s %s\n" "CGI HostVDS" "$([[ -n "$CGI_APP_CRED_ID" ]] && echo "configured (locations are mapped in the next step)" || echo "not configured (run: vpsbot cgi later)")"
   printf "  %-18s %s\n" "3HCloud"     "$([[ -n "$H3C_USERNAME" ]] && echo "configured (locations are mapped in the next step)" || echo "not configured (run: vpsbot h3c later)")"
   printf "  %-18s %s\n" "Virtua.Cloud" "$([[ -n "$VIRTUA_API_KEY" ]] && echo "configured (catalog is imported in the next step)" || echo "not configured (run: vpsbot virtua later)")"
+  printf "  %-18s %s\n" "UpCloud"     "$([[ -n "$UPCLOUD_TOKEN" ]] && echo "configured (catalog is imported in the next step)" || echo "not configured (run: vpsbot upcloud later)")"
   printf "  %-18s %s\n" "App port"   "127.0.0.1:${PORT}"
   printf "  %-18s %s\n" "Install dir" "$APP_DIR"
   echo
@@ -921,6 +1003,7 @@ do_install() {
   run_step "Writing CGI configuration"                                 step_env_cgi  || return 1
   run_step "Writing 3HCloud configuration"                             step_env_h3c  || return 1
   run_step "Writing Virtua configuration"                              step_env_virtua || return 1
+  run_step "Writing UpCloud configuration"                             step_env_upcloud || return 1
   save_meta
   run_step "Installing dependencies (npm)"                             step_npm_install || return 1
   run_step "Creating database tables"                                  step_migrate  || return 1
@@ -934,6 +1017,10 @@ do_install() {
   fi
   if [[ -n "$VIRTUA_API_KEY" ]]; then
     virtua_setup || warn "Virtua setup is incomplete — finish it any time with: ${B}vpsbot virtua${R}"
+    echo; section "Installing"
+  fi
+  if [[ -n "$UPCLOUD_TOKEN" ]]; then
+    upcloud_setup || warn "UpCloud setup is incomplete — finish it any time with: ${B}vpsbot upcloud${R}"
     echo; section "Installing"
   fi
   run_step "Building the application (this can take a few minutes)"    step_build    || return 1
@@ -1005,6 +1092,9 @@ do_update() {
     else
       run_step "Refreshing the CGI catalog"  app_run "npm run --silent cgi:seed" || warn "CGI catalog refresh failed (see $LOG_FILE)."
     fi
+  fi
+  if upcloud_configured; then
+    run_step "Refreshing the UpCloud catalog" app_run "npm run --silent upcloud:seed" || warn "UpCloud catalog refresh failed (see $LOG_FILE)."
   fi
   if virtua_configured; then
     run_step "Refreshing the Virtua catalog" app_run "npm run --silent virtua:seed" || warn "Virtua catalog refresh failed (see $LOG_FILE)."
@@ -1084,19 +1174,20 @@ settings_menu() {
   need_root
   is_installed || { err "Not installed."; pause; return; }
   load_meta
-  local keys=(BOT_TOKEN ADMIN_IDS SUPPORT_USERNAME CARD_NUMBER CARD_OWNER MIN_TOPUP MIN_BALANCE_TO_BUY REF_PERCENT VIRT_URL VIRT_API_KEY VIRT_API_PASS VIRT_INSECURE_TLS VIRT_USER_PREFIX VIRT_USER_DOMAIN VIRT_USER_START VPS_HOSTNAME_TEMPLATE CGI_AUTH_URL CGI_APP_CRED_ID CGI_APP_CRED_SECRET CGI_SECURITY_GROUP CGI_REGION CGI_REGION_MAP H3C_AUTH_URL H3C_USERNAME H3C_PASSWORD H3C_PROJECT H3C_USER_DOMAIN H3C_PROJECT_DOMAIN H3C_REGION_MAP H3C_NETWORK H3C_SECURITY_GROUP H3C_VOLUME_TYPE H3C_PRICES VIRTUA_API_KEY VIRTUA_PROJECT VIRTUA_PASSWORD_FIELD VIRTUA_PRICES)
-  local labels=("Bot token" "Admin IDs" "Support username" "Card number" "Card owner" "Minimum top-up" "Minimum balance to buy" "Referral percent" "Virtualizor URL" "Virtualizor API key" "Virtualizor API pass" "Self-signed SSL (1/0)" "Panel user e-mail prefix" "Panel user e-mail domain" "First user number" "VPS hostname template" "CGI Keystone URL" "CGI credential ID" "CGI credential secret" "CGI security group" "CGI default region" "CGI location→region map" "3HCloud Keystone URL template ({code})" "3HCloud API username" "3HCloud API password" "3HCloud project" "3HCloud user domain" "3HCloud project domain" "3HCloud location→region map" "3HCloud public network" "3HCloud security group" "3HCloud disk type" "3HCloud flavor prices" "Virtua API key" "Virtua project UUID" "Virtua password field" "Virtua offer prices")
+  local keys=(BOT_TOKEN ADMIN_IDS SUPPORT_USERNAME CARD_NUMBER CARD_OWNER MIN_TOPUP MIN_BALANCE_TO_BUY REF_PERCENT VIRT_URL VIRT_API_KEY VIRT_API_PASS VIRT_INSECURE_TLS VIRT_USER_PREFIX VIRT_USER_DOMAIN VIRT_USER_START VPS_HOSTNAME_TEMPLATE CGI_AUTH_URL CGI_APP_CRED_ID CGI_APP_CRED_SECRET CGI_SECURITY_GROUP CGI_REGION CGI_REGION_MAP H3C_AUTH_URL H3C_USERNAME H3C_PASSWORD H3C_PROJECT H3C_USER_DOMAIN H3C_PROJECT_DOMAIN H3C_REGION_MAP H3C_NETWORK H3C_SECURITY_GROUP H3C_VOLUME_TYPE H3C_PRICES VIRTUA_API_KEY VIRTUA_PROJECT VIRTUA_PASSWORD_FIELD VIRTUA_PRICES UPCLOUD_TOKEN UPCLOUD_ZONES UPCLOUD_PASSWORD_MODE UPCLOUD_PRICES)
+  local labels=("Bot token" "Admin IDs" "Support username" "Card number" "Card owner" "Minimum top-up" "Minimum balance to buy" "Referral percent" "Virtualizor URL" "Virtualizor API key" "Virtualizor API pass" "Self-signed SSL (1/0)" "Panel user e-mail prefix" "Panel user e-mail domain" "First user number" "VPS hostname template" "CGI Keystone URL" "CGI credential ID" "CGI credential secret" "CGI security group" "CGI default region" "CGI location→region map" "3HCloud Keystone URL template ({code})" "3HCloud API username" "3HCloud API password" "3HCloud project" "3HCloud user domain" "3HCloud project domain" "3HCloud location→region map" "3HCloud public network" "3HCloud security group" "3HCloud disk type" "3HCloud flavor prices" "Virtua API key" "Virtua project UUID" "Virtua password field" "Virtua offer prices" "UpCloud API token" "UpCloud zones" "UpCloud password mode" "UpCloud plan prices")
   while true; do
     banner; section "Bot settings"
     local i v
     for i in "${!keys[@]}"; do
       v="$(env_get "${keys[$i]}")"
       [[ "${keys[$i]}" == BOT_TOKEN ]] && v="${v%%:*}:••••••••"
-      [[ ( "${keys[$i]}" == VIRT_API_* || "${keys[$i]}" == CGI_APP_CRED_SECRET || "${keys[$i]}" == H3C_PASSWORD || "${keys[$i]}" == VIRTUA_API_KEY ) && -n "$v" ]] && v="${v:0:4}••••••••"
+      [[ ( "${keys[$i]}" == VIRT_API_* || "${keys[$i]}" == CGI_APP_CRED_SECRET || "${keys[$i]}" == H3C_PASSWORD || "${keys[$i]}" == VIRTUA_API_KEY || "${keys[$i]}" == UPCLOUD_TOKEN ) && -n "$v" ]] && v="${v:0:4}••••••••"
       printf "   ${CYN}%d${R}  %-24s ${D}%s${R}\n" "$((i + 1))" "${labels[$i]}" "$v"
     done
     printf "   ${CYN}e${R}  Edit .env.local in nano\n"
     printf "   ${CYN}v${R}  Test Virtualizor connection / list node & OS IDs\n"
+    printf "   ${CYN}p${R}  UpCloud wizard (read account, import catalog, live test)\n"
     printf "   ${CYN}u${R}  Virtua.Cloud wizard (read account, import catalog, live test)\n"
     printf "   ${CYN}h${R}  3HCloud wizard (read account, map locations, import catalog)\n"
     printf "   ${CYN}c${R}  CGI wizard (read regions, map locations, import catalog, bandwidth prices)\n"
@@ -1108,7 +1199,7 @@ settings_menu() {
       [0-9]|[1-9][0-9])
         (( c >= 1 && c <= ${#keys[@]} )) || continue
         local k="${keys[$((c - 1))]}" nv
-        if [[ "$k" == CGI_APP_CRED_SECRET || "$k" == H3C_PASSWORD || "$k" == VIRTUA_API_KEY ]]; then prompt_secret nv "New value for ${labels[$((c - 1))]} (hidden)"; env_put "$k" "$nv"
+        if [[ "$k" == CGI_APP_CRED_SECRET || "$k" == H3C_PASSWORD || "$k" == VIRTUA_API_KEY || "$k" == UPCLOUD_TOKEN ]]; then prompt_secret nv "New value for ${labels[$((c - 1))]} (hidden)"; env_put "$k" "$nv"
         else prompt nv "New value for ${labels[$((c - 1))]}" "" '.+' "Cannot be empty."; env_set "$k" "$nv"; fi
         systemctl restart "$SERVICE" && ok "Saved and restarted."
         [[ "$k" == BOT_TOKEN ]] && do_webhook
@@ -1119,6 +1210,7 @@ settings_menu() {
       c|C) do_cgi; pause ;;
       h|H) do_h3c; pause ;;
       u|U) do_virtua; pause ;;
+      p|P) do_upcloud; pause ;;
       s|S) DOMAIN="${DOMAIN}"; SSL_EMAIL=""; run_step "Issuing SSL certificate" step_ssl && do_webhook; pause ;;
     esac
   done
@@ -1210,6 +1302,7 @@ Usage: vpsbot [command]
   cgi            CGI (HostVDS) wizard: regions → locations, catalog import, bandwidth prices, live test
   h3c            3HCloud wizard: read account → locations (Region/Zone), catalog import, live test
   virtua         Virtua.Cloud wizard: read account, catalog import, live test
+  upcloud        UpCloud wizard: read account, zones, catalog import, live test
   backup         dump the database to ${BACKUP_DIR}
   uninstall      remove the bot
 EOF
@@ -1234,6 +1327,7 @@ case "${1:-menu}" in
   cgi)            do_cgi ;;
   h3c)            do_h3c ;;
   virtua)         do_virtua ;;
+  upcloud)        do_upcloud ;;
   backup)         do_backup ;;
   uninstall)      do_uninstall ;;
   -h|--help|help) usage ;;

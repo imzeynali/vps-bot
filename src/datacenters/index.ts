@@ -9,6 +9,7 @@ import { virtualizorDatacenter } from "./virtualizor";
 import { cgiDatacenter } from "./cgi";
 import { h3cDatacenter } from "./h3c";
 import { virtuaDatacenter } from "./virtua";
+import { upcloudDatacenter } from "./upcloud";
 
 const g = globalThis as unknown as { __dcRegistered?: boolean };
 if (!g.__dcRegistered) {
@@ -18,6 +19,7 @@ if (!g.__dcRegistered) {
   registerDatacenter(cgiDatacenter); // 🌍 بین‌الملل
   registerDatacenter(h3cDatacenter); // 🌍 بین‌الملل (3HCloud)
   registerDatacenter(virtuaDatacenter); // 🌍 بین‌الملل (Virtua.Cloud)
+  registerDatacenter(upcloudDatacenter); // 🌍 بین‌الملل (UpCloud)
 }
 
 export * from "./registry";

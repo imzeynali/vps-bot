@@ -16,6 +16,9 @@
     "cgi:seed": "tsx --env-file=.env.local scripts/cgi-seed.ts",
     "cgi:regions": "tsx --env-file=.env.local scripts/cgi-regions.ts",
     "cgi:smoke": "tsx --env-file=.env.local scripts/cgi-smoke.ts",
+    "upcloud:discover": "tsx --env-file=.env.local scripts/upcloud-discover.ts",
+    "upcloud:seed": "tsx --env-file=.env.local scripts/upcloud-seed.ts",
+    "upcloud:smoke": "tsx --env-file=.env.local scripts/upcloud-smoke.ts",
     "virtua:discover": "tsx --env-file=.env.local scripts/virtua-discover.ts",
     "virtua:seed": "tsx --env-file=.env.local scripts/virtua-seed.ts",
     "virtua:smoke": "tsx --env-file=.env.local scripts/virtua-smoke.ts",
@@ -26,8 +29,9 @@
     "test:cgimenu": "tsx --env-file=.env.local test/cgi-menu.ts",
     "test:h3chttp": "tsx test/h3c-http.ts",
     "test:virtua": "tsx test/virtua-http.ts",
+    "test:upcloud": "tsx test/upcloud-http.ts",
     "test:cgi": "tsx --env-file=.env.local test/cgi.ts",
-    "test": "npm run test:virt && npm run test:admin && npm run test:dc && npm run test:cgi && npm run test:cgimenu && npm run test:h3chttp && npm run test:virtua"
+    "test": "npm run test:virt && npm run test:admin && npm run test:dc && npm run test:cgi && npm run test:cgimenu && npm run test:h3chttp && npm run test:virtua && npm run test:upcloud"
   },
   "dependencies": {
     "grammy": "^1.30.0",
