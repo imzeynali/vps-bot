@@ -16,14 +16,18 @@
     "cgi:seed": "tsx --env-file=.env.local scripts/cgi-seed.ts",
     "cgi:regions": "tsx --env-file=.env.local scripts/cgi-regions.ts",
     "cgi:smoke": "tsx --env-file=.env.local scripts/cgi-smoke.ts",
+    "virtua:discover": "tsx --env-file=.env.local scripts/virtua-discover.ts",
+    "virtua:seed": "tsx --env-file=.env.local scripts/virtua-seed.ts",
+    "virtua:smoke": "tsx --env-file=.env.local scripts/virtua-smoke.ts",
     "h3c:discover": "tsx --env-file=.env.local scripts/h3c-discover.ts",
     "h3c:seed": "tsx --env-file=.env.local scripts/h3c-seed.ts",
     "h3c:smoke": "tsx --env-file=.env.local scripts/h3c-smoke.ts",
     "cgi:bw": "tsx --env-file=.env.local scripts/cgi-bw.ts",
     "test:cgimenu": "tsx --env-file=.env.local test/cgi-menu.ts",
     "test:h3chttp": "tsx test/h3c-http.ts",
+    "test:virtua": "tsx test/virtua-http.ts",
     "test:cgi": "tsx --env-file=.env.local test/cgi.ts",
-    "test": "npm run test:virt && npm run test:admin && npm run test:dc && npm run test:cgi && npm run test:cgimenu && npm run test:h3chttp"
+    "test": "npm run test:virt && npm run test:admin && npm run test:dc && npm run test:cgi && npm run test:cgimenu && npm run test:h3chttp && npm run test:virtua"
   },
   "dependencies": {
     "grammy": "^1.30.0",

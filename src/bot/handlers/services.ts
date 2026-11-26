@@ -28,7 +28,7 @@ function serviceKb(id: number, s?: ServiceRow) {
   const kb = new InlineKeyboard();
   if (s && s.billing_mode === "monthly" && s.trial && !s.trial_issue) kb.text("⚠️ گزارش مشکل (دوره تست)", `svcprob:${id}`).row();
   kb.text("▶️ روشن", `pw:${id}:on`).text("⏹ خاموش", `pw:${id}:off`).row().text("🔄 ریبوت", `pw:${id}:reboot`);
-  if (s?.datacenter !== "h3c") kb.text("🛠 ریبیلد", `rb:${id}`); // 3HCloud نصب مجدد OS ندارد
+  if (s?.datacenter !== "h3c" && s?.datacenter !== "virtua") kb.text("🛠 ریبیلد", `rb:${id}`); // 3HCloud و Virtua نصب مجدد OS ندارند
   return kb
     .row()
     .text("🗑 حذف سرور", `del:${id}`)

@@ -70,6 +70,19 @@ export const config = {
     buildTimeoutMs: num(process.env.H3C_BUILD_TIMEOUT_MS, 600000), // ساخت از روی volume کندتر است
     pollMs: num(process.env.H3C_POLL_MS, 4000),
   },
+  // ── دیتاسنتر Virtua.Cloud (بین‌الملل، فرانسه) — API ساده با کلید ──
+  virtua: {
+    apiUrl: (process.env.VIRTUA_API_URL || "https://api.virtua.cloud").trim().replace(/\/+$/, ""),
+    apiKey: (process.env.VIRTUA_API_KEY ?? "").trim(),
+    project: (process.env.VIRTUA_PROJECT ?? "").trim(), // UUID پروژه؛ خالی = اولین پروژه‌ی حساب
+    /** نام فیلدی از جزئیات سرور که پسورد root را دارد (بعد از «npm run virtua:discover» تعیین می‌شود) */
+    passwordField: (process.env.VIRTUA_PASSWORD_FIELD ?? "").trim(),
+    /** JSON اضافه برای سفارش؛ «{password}» با پسورد ربات جایگزین می‌شود. مثال: {"root_password":"{password}"} */
+    orderExtra: process.env.VIRTUA_ORDER_EXTRA ?? "",
+    timeoutMs: num(process.env.VIRTUA_TIMEOUT_MS, 30000),
+    buildTimeoutMs: num(process.env.VIRTUA_BUILD_TIMEOUT_MS, 480000),
+    pollMs: num(process.env.VIRTUA_POLL_MS, 4000),
+  },
   // دامنه‌ی hostname سرورها: s<ID>.<vpsDomain>
   vpsDomain: (process.env.VPS_DOMAIN || hostOf(process.env.APP_URL) || "vps.local").toLowerCase(),
   // الگوی hostname: {n} شماره (مثلاً 1001) ، {id} شناسه سرویس ، {domain} دامنه بالا

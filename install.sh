@@ -14,7 +14,7 @@ set -uo pipefail
 cd /tmp 2>/dev/null || true
 
 # ───────────────────────────── Settings ─────────────────────────────
-INSTALLER_VERSION="1.2.2"
+INSTALLER_VERSION="1.3.1"
 DEFAULT_REPO="YOUR_GITHUB_USERNAME/vps-bot-next"   # ← replace with your own repo
 APP_USER="vpsbot"
 INSTALL_ROOT="/opt/vps-bot"
@@ -38,6 +38,7 @@ PORT="3000"
 CGI_AUTH_URL=""; CGI_APP_CRED_ID=""; CGI_APP_CRED_SECRET=""; CGI_SECURITY_GROUP="allow_all"
 CGI_LOCS=(paris nl lv fi)
 H3C_AUTH_URL=""; H3C_USERNAME=""; H3C_PASSWORD=""; H3C_USER_DOMAIN="Default"; H3C_PROJECT=""; H3C_PROJECT_DOMAIN="Default"
+VIRTUA_API_KEY=""
 H3C_LOCS=(mia dfw sfo waw ala mnl)
 h3c_default_region() { case "$1" in mia) echo Miami;; dfw) echo Dallas;; sfo) echo SanFrancisco;; waw) echo Warsaw;; ala) echo Almaty;; mnl) echo Manila;; *) echo "-";; esac; }
 h3c_title() { case "$1" in mia) echo "🇺🇸 Miami";; dfw) echo "🇺🇸 Dallas";; sfo) echo "🇺🇸 San Francisco";; waw) echo "🇵🇱 Warsaw";; ala) echo "🇰🇿 Almaty";; mnl) echo "🇵🇭 Manila";; *) echo "$1";; esac; }
@@ -146,6 +147,8 @@ check_os() {
 }
 
 is_installed() { [[ -f "$META_FILE" && -d "$APP_DIR/.git" ]]; }
+# A failed install leaves meta + code behind but never reaches the systemd step; that is a PARTIAL install, not a finished one.
+install_complete() { is_installed && [[ -f "/etc/systemd/system/${SERVICE}.service" ]]; }
 
 load_meta() {
   [[ -f "$META_FILE" ]] || return 0
@@ -589,6 +592,84 @@ do_h3c() {
   h3c_setup
 }
 
+step_env_virtua() {
+  [[ -n "$VIRTUA_API_KEY" ]] || return 0
+  env_put VIRTUA_API_KEY "$VIRTUA_API_KEY"
+  chown "$APP_USER":"$APP_USER" "$ENV_FILE"; chmod 600 "$ENV_FILE"
+}
+
+virtua_configured() { [[ -n "$(env_get VIRTUA_API_KEY)" ]]; }
+
+# HTTP status of GET /account with the API key (200 = good, 401/403 = rejected)
+virtua_auth_code() {
+  curl -s -o /dev/null -w '%{http_code}' --max-time 20 -H "Authorization: Basic $1" "https://api.virtua.cloud/account" 2>/dev/null || echo 000
+}
+
+ask_virtua_credentials() {
+  local code
+  VIRTUA_API_KEY=""
+  info "Virtua.Cloud (France): create an API key in the customer area (manager.virtua.cloud). It is used as 'Authorization: Basic <key>'."
+  while true; do
+    prompt_secret VIRTUA_API_KEY "Virtua API key (hidden)"
+    code="$(virtua_auth_code "$VIRTUA_API_KEY")"
+    if [[ "$code" == "200" ]]; then ok "Virtua login works"; break
+    elif [[ "$code" == "401" || "$code" == "403" ]]; then warn "Virtua rejected the key (HTTP ${code})."
+    else
+      warn "Could not verify (HTTP ${code}) — network problem?"
+      confirm "Use this key anyway?" n && break
+    fi
+    confirm "Try again?" y || { VIRTUA_API_KEY=""; return 0; }
+  done
+}
+
+# Virtua wiring: shows the account (limits, projects, offers, systems, raw field names), imports the catalog,
+# optionally runs a live test. Works on a fresh install and as `vpsbot virtua`.
+virtua_setup() {
+  virtua_configured || { warn "Virtua API key is not set. Run ${B}vpsbot virtua${R}."; return 1; }
+  section "Virtua.Cloud — account, catalog"
+  info "Reading your Virtua account…"
+  app_run "npm run --silent virtua:discover" || { err "Could not read the account. Check VIRTUA_API_KEY, then run: ${B}vpsbot virtua${R}"; return 1; }
+  echo
+  local proj pf
+  prompt proj "Project UUID (empty = first project of the account)" "$(env_get VIRTUA_PROJECT)" '^([0-9a-fA-F-]{8,64})?$' "A UUID (or leave empty)."
+  [[ -n "$proj" ]] && env_put VIRTUA_PROJECT "$proj"
+  prompt pf "Server-detail field that holds the root password (empty if unknown, e.g. root_password)" "$(env_get VIRTUA_PASSWORD_FIELD)" '^([A-Za-z0-9_.]{1,64})?$' "Letters, digits, _ and . only."
+  [[ -n "$pf" ]] && env_put VIRTUA_PASSWORD_FIELD "$pf"
+  chown "$APP_USER":"$APP_USER" "$ENV_FILE"; chmod 600 "$ENV_FILE"
+
+  run_step "Importing the Virtua catalog (plans, Ubuntu systems, location)" app_run "npm run --silent virtua:seed" || return 1
+  info "Plans are created ${B}inactive${R}: set their hourly price in the bot's admin panel ${B}only after${R} the live test below succeeds."
+  warn "The docs do not say how the root password is set. The live test proves it: if it fails with a password message, see README → Virtua."
+
+  if systemctl is-active --quiet "$SERVICE" 2>/dev/null; then systemctl restart "$SERVICE" && ok "Bot restarted with the new Virtua settings."; fi
+
+  echo
+  warn "The live test orders ONE real server on Virtua (small hourly cost)."
+  if confirm "Run the live create test now?" n; then
+    local out; out="$(mktemp)"
+    app_run "npm run --silent virtua:smoke -- create" 2>&1 | tee "$out"
+    local sid; sid="$(grep -o 'delete [0-9]\+' "$out" | tail -1 | awk '{print $2}')"; rm -f "$out"
+    if [[ -n "$sid" ]] && confirm "Delete the test server #${sid} now?" y; then
+      app_run "npm run --silent virtua:smoke -- delete ${sid}" || warn "Delete failed — run: cd $APP_DIR && npm run virtua:smoke -- delete ${sid}"
+    fi
+  fi
+  return 0
+}
+
+do_virtua() {
+  need_root
+  is_installed || { err "Not installed."; return 1; }
+  load_meta
+  fix_perms
+  if ! virtua_configured; then
+    info "Virtua.Cloud is not configured yet."
+    ask_virtua_credentials
+    [[ -n "$VIRTUA_API_KEY" ]] || { info "Skipped."; return 0; }
+    step_env_virtua
+  fi
+  virtua_setup
+}
+
 step_npm_install() { app_run "npm ci --no-audit --no-fund || npm install --no-audit --no-fund"; }
 step_migrate()     { app_run "npm run migrate"; }
 step_build()       { app_run "npm run build"; }
@@ -724,9 +805,13 @@ do_install() {
   need_root; check_os
   banner
   if is_installed; then
-    warn "The bot is already installed."
-    info "Use ${B}Update${R} to upgrade, or ${B}Uninstall${R} first to start over."
-    return
+    if install_complete; then
+      warn "The bot is already installed."
+      info "Use ${B}Update${R} to upgrade, or ${B}Uninstall${R} first to start over."
+      return
+    fi
+    warn "A previous installation did not finish (the bot service was never created)."
+    confirm "Start the installation again? (the app folder is re-downloaded; the database user is reused)" y || return
   fi
 
   if [[ "$REPO" == *YOUR_GITHUB_USERNAME* ]]; then
@@ -795,11 +880,15 @@ do_install() {
     confirm "Does the panel use a self-signed / invalid SSL certificate?" n && VIRT_INSECURE="1"
   fi
 
-  section "International servers — CGI (HostVDS / OpenStack)"
-  ask_cgi_credentials
-
-  section "International servers — 3HCloud (OpenStack)"
-  ask_h3c_credentials
+  section "International providers (all optional)"
+  info "Choose which providers to set up now. Skipped ones stay hidden from users; add them any time later with:"
+  info "${B}vpsbot cgi${R}  |  ${B}vpsbot h3c${R}  |  ${B}vpsbot virtua${R}"
+  printf "   ${CYN}1${R}  CGI (HostVDS)\n   ${CYN}2${R}  3HCloud\n   ${CYN}3${R}  Virtua.Cloud\n"
+  local PICK=""
+  prompt PICK "Numbers separated by commas (e.g. 1,3) — Enter = skip all" "" '^([1-3](,[1-3])*)?$' "Use numbers 1-3 separated by commas (e.g. 1,3), or leave empty to skip all."
+  if [[ ",$PICK," == *,1,* ]]; then section "International servers — CGI (HostVDS / OpenStack)"; ask_cgi_credentials; else ok "CGI skipped"; fi
+  if [[ ",$PICK," == *,2,* ]]; then section "International servers — 3HCloud (OpenStack)"; ask_h3c_credentials; else ok "3HCloud skipped"; fi
+  if [[ ",$PICK," == *,3,* ]]; then section "International servers — Virtua.Cloud"; ask_virtua_credentials; else ok "Virtua.Cloud skipped"; fi
 
   PORT=3000; while port_in_use "$PORT"; do PORT=$((PORT + 1)); done
   WEBHOOK_SECRET="$(openssl rand -hex 24)"
@@ -814,6 +903,7 @@ do_install() {
   printf "  %-18s %s\n" "Virtualizor" "${VIRT_URL:-not configured (set later)}"
   printf "  %-18s %s\n" "CGI HostVDS" "$([[ -n "$CGI_APP_CRED_ID" ]] && echo "configured (locations are mapped in the next step)" || echo "not configured (run: vpsbot cgi later)")"
   printf "  %-18s %s\n" "3HCloud"     "$([[ -n "$H3C_USERNAME" ]] && echo "configured (locations are mapped in the next step)" || echo "not configured (run: vpsbot h3c later)")"
+  printf "  %-18s %s\n" "Virtua.Cloud" "$([[ -n "$VIRTUA_API_KEY" ]] && echo "configured (catalog is imported in the next step)" || echo "not configured (run: vpsbot virtua later)")"
   printf "  %-18s %s\n" "App port"   "127.0.0.1:${PORT}"
   printf "  %-18s %s\n" "Install dir" "$APP_DIR"
   echo
@@ -830,6 +920,7 @@ do_install() {
   run_step "Writing configuration (.env.local)"                        step_env      || return 1
   run_step "Writing CGI configuration"                                 step_env_cgi  || return 1
   run_step "Writing 3HCloud configuration"                             step_env_h3c  || return 1
+  run_step "Writing Virtua configuration"                              step_env_virtua || return 1
   save_meta
   run_step "Installing dependencies (npm)"                             step_npm_install || return 1
   run_step "Creating database tables"                                  step_migrate  || return 1
@@ -839,6 +930,10 @@ do_install() {
   fi
   if [[ -n "$H3C_USERNAME" ]]; then
     h3c_setup || warn "3HCloud setup is incomplete — finish it any time with: ${B}vpsbot h3c${R}"
+    echo; section "Installing"
+  fi
+  if [[ -n "$VIRTUA_API_KEY" ]]; then
+    virtua_setup || warn "Virtua setup is incomplete — finish it any time with: ${B}vpsbot virtua${R}"
     echo; section "Installing"
   fi
   run_step "Building the application (this can take a few minutes)"    step_build    || return 1
@@ -910,6 +1005,9 @@ do_update() {
     else
       run_step "Refreshing the CGI catalog"  app_run "npm run --silent cgi:seed" || warn "CGI catalog refresh failed (see $LOG_FILE)."
     fi
+  fi
+  if virtua_configured; then
+    run_step "Refreshing the Virtua catalog" app_run "npm run --silent virtua:seed" || warn "Virtua catalog refresh failed (see $LOG_FILE)."
   fi
   if h3c_configured; then
     if [[ -z "$(env_get H3C_REGION_MAP)" ]]; then
@@ -986,19 +1084,20 @@ settings_menu() {
   need_root
   is_installed || { err "Not installed."; pause; return; }
   load_meta
-  local keys=(BOT_TOKEN ADMIN_IDS SUPPORT_USERNAME CARD_NUMBER CARD_OWNER MIN_TOPUP MIN_BALANCE_TO_BUY REF_PERCENT VIRT_URL VIRT_API_KEY VIRT_API_PASS VIRT_INSECURE_TLS VIRT_USER_PREFIX VIRT_USER_DOMAIN VIRT_USER_START VPS_HOSTNAME_TEMPLATE CGI_AUTH_URL CGI_APP_CRED_ID CGI_APP_CRED_SECRET CGI_SECURITY_GROUP CGI_REGION CGI_REGION_MAP H3C_AUTH_URL H3C_USERNAME H3C_PASSWORD H3C_PROJECT H3C_USER_DOMAIN H3C_PROJECT_DOMAIN H3C_REGION_MAP H3C_NETWORK H3C_SECURITY_GROUP H3C_VOLUME_TYPE H3C_PRICES)
-  local labels=("Bot token" "Admin IDs" "Support username" "Card number" "Card owner" "Minimum top-up" "Minimum balance to buy" "Referral percent" "Virtualizor URL" "Virtualizor API key" "Virtualizor API pass" "Self-signed SSL (1/0)" "Panel user e-mail prefix" "Panel user e-mail domain" "First user number" "VPS hostname template" "CGI Keystone URL" "CGI credential ID" "CGI credential secret" "CGI security group" "CGI default region" "CGI location→region map" "3HCloud Keystone URL template ({code})" "3HCloud API username" "3HCloud API password" "3HCloud project" "3HCloud user domain" "3HCloud project domain" "3HCloud location→region map" "3HCloud public network" "3HCloud security group" "3HCloud disk type" "3HCloud flavor prices")
+  local keys=(BOT_TOKEN ADMIN_IDS SUPPORT_USERNAME CARD_NUMBER CARD_OWNER MIN_TOPUP MIN_BALANCE_TO_BUY REF_PERCENT VIRT_URL VIRT_API_KEY VIRT_API_PASS VIRT_INSECURE_TLS VIRT_USER_PREFIX VIRT_USER_DOMAIN VIRT_USER_START VPS_HOSTNAME_TEMPLATE CGI_AUTH_URL CGI_APP_CRED_ID CGI_APP_CRED_SECRET CGI_SECURITY_GROUP CGI_REGION CGI_REGION_MAP H3C_AUTH_URL H3C_USERNAME H3C_PASSWORD H3C_PROJECT H3C_USER_DOMAIN H3C_PROJECT_DOMAIN H3C_REGION_MAP H3C_NETWORK H3C_SECURITY_GROUP H3C_VOLUME_TYPE H3C_PRICES VIRTUA_API_KEY VIRTUA_PROJECT VIRTUA_PASSWORD_FIELD VIRTUA_PRICES)
+  local labels=("Bot token" "Admin IDs" "Support username" "Card number" "Card owner" "Minimum top-up" "Minimum balance to buy" "Referral percent" "Virtualizor URL" "Virtualizor API key" "Virtualizor API pass" "Self-signed SSL (1/0)" "Panel user e-mail prefix" "Panel user e-mail domain" "First user number" "VPS hostname template" "CGI Keystone URL" "CGI credential ID" "CGI credential secret" "CGI security group" "CGI default region" "CGI location→region map" "3HCloud Keystone URL template ({code})" "3HCloud API username" "3HCloud API password" "3HCloud project" "3HCloud user domain" "3HCloud project domain" "3HCloud location→region map" "3HCloud public network" "3HCloud security group" "3HCloud disk type" "3HCloud flavor prices" "Virtua API key" "Virtua project UUID" "Virtua password field" "Virtua offer prices")
   while true; do
     banner; section "Bot settings"
     local i v
     for i in "${!keys[@]}"; do
       v="$(env_get "${keys[$i]}")"
       [[ "${keys[$i]}" == BOT_TOKEN ]] && v="${v%%:*}:••••••••"
-      [[ ( "${keys[$i]}" == VIRT_API_* || "${keys[$i]}" == CGI_APP_CRED_SECRET || "${keys[$i]}" == H3C_PASSWORD ) && -n "$v" ]] && v="${v:0:4}••••••••"
+      [[ ( "${keys[$i]}" == VIRT_API_* || "${keys[$i]}" == CGI_APP_CRED_SECRET || "${keys[$i]}" == H3C_PASSWORD || "${keys[$i]}" == VIRTUA_API_KEY ) && -n "$v" ]] && v="${v:0:4}••••••••"
       printf "   ${CYN}%d${R}  %-24s ${D}%s${R}\n" "$((i + 1))" "${labels[$i]}" "$v"
     done
     printf "   ${CYN}e${R}  Edit .env.local in nano\n"
     printf "   ${CYN}v${R}  Test Virtualizor connection / list node & OS IDs\n"
+    printf "   ${CYN}u${R}  Virtua.Cloud wizard (read account, import catalog, live test)\n"
     printf "   ${CYN}h${R}  3HCloud wizard (read account, map locations, import catalog)\n"
     printf "   ${CYN}c${R}  CGI wizard (read regions, map locations, import catalog, bandwidth prices)\n"
     printf "   ${CYN}s${R}  Retry SSL certificate\n"
@@ -1009,7 +1108,7 @@ settings_menu() {
       [0-9]|[1-9][0-9])
         (( c >= 1 && c <= ${#keys[@]} )) || continue
         local k="${keys[$((c - 1))]}" nv
-        if [[ "$k" == CGI_APP_CRED_SECRET || "$k" == H3C_PASSWORD ]]; then prompt_secret nv "New value for ${labels[$((c - 1))]} (hidden)"; env_put "$k" "$nv"
+        if [[ "$k" == CGI_APP_CRED_SECRET || "$k" == H3C_PASSWORD || "$k" == VIRTUA_API_KEY ]]; then prompt_secret nv "New value for ${labels[$((c - 1))]} (hidden)"; env_put "$k" "$nv"
         else prompt nv "New value for ${labels[$((c - 1))]}" "" '.+' "Cannot be empty."; env_set "$k" "$nv"; fi
         systemctl restart "$SERVICE" && ok "Saved and restarted."
         [[ "$k" == BOT_TOKEN ]] && do_webhook
@@ -1019,6 +1118,7 @@ settings_menu() {
       v|V) do_virt; pause ;;
       c|C) do_cgi; pause ;;
       h|H) do_h3c; pause ;;
+      u|U) do_virtua; pause ;;
       s|S) DOMAIN="${DOMAIN}"; SSL_EMAIL=""; run_step "Issuing SSL certificate" step_ssl && do_webhook; pause ;;
     esac
   done
@@ -1109,6 +1209,7 @@ Usage: vpsbot [command]
   virt           test the Virtualizor connection and list node/OS IDs
   cgi            CGI (HostVDS) wizard: regions → locations, catalog import, bandwidth prices, live test
   h3c            3HCloud wizard: read account → locations (Region/Zone), catalog import, live test
+  virtua         Virtua.Cloud wizard: read account, catalog import, live test
   backup         dump the database to ${BACKUP_DIR}
   uninstall      remove the bot
 EOF
@@ -1132,6 +1233,7 @@ case "${1:-menu}" in
   virt)           do_virt ;;
   cgi)            do_cgi ;;
   h3c)            do_h3c ;;
+  virtua)         do_virtua ;;
   backup)         do_backup ;;
   uninstall)      do_uninstall ;;
   -h|--help|help) usage ;;
