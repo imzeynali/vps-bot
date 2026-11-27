@@ -132,9 +132,9 @@ export async function getServer(uuid: string): Promise<ServerInfo | null> {
   }
 }
 
-/** فهرست سرورها (نکته‌ی مستندات: فهرست IP و دیسک ندارد؛ فقط uuid/hostname/state/zone) */
+/** فهرست سرورها (فهرست IP و دیسک ندارد؛ فقط uuid/hostname/state/zone). پارامتر limit عمداً فرستاده نمی‌شود: UpCloud مقدار 1000 را رد می‌کند (LIMIT_INVALID). */
 export async function listServers(search?: string): Promise<ServerInfo[]> {
-  const j = await call("GET", "/server", undefined, { limit: "1000", ...(search ? { search } : {}) });
+  const j = await call("GET", "/server", undefined, search ? { search } : undefined);
   return listIn(j, "servers", "server").map(serverInfo);
 }
 

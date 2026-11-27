@@ -14,7 +14,7 @@ set -uo pipefail
 cd /tmp 2>/dev/null || true
 
 # ───────────────────────────── Settings ─────────────────────────────
-INSTALLER_VERSION="1.4.0"
+INSTALLER_VERSION="1.4.1"
 DEFAULT_REPO="YOUR_GITHUB_USERNAME/vps-bot-next"   # ← replace with your own repo
 APP_USER="vpsbot"
 INSTALL_ROOT="/opt/vps-bot"
@@ -241,8 +241,8 @@ status_dot() {
 # ───────────────────────────── Install steps ─────────────────────────────
 step_packages() {
   export DEBIAN_FRONTEND=noninteractive
-  apt-get -o DPkg::Lock::Timeout=180 update -y
-  apt-get -o DPkg::Lock::Timeout=180 install -y --no-install-recommends \
+  apt-get -o DPkg::Lock::Timeout=900 update -y
+  apt-get -o DPkg::Lock::Timeout=900 install -y --no-install-recommends \
     curl ca-certificates gnupg git openssl nginx certbot python3-certbot-nginx \
     postgresql postgresql-contrib iproute2 dnsutils
 }
@@ -253,7 +253,7 @@ step_node() {
   command -v node >/dev/null 2>&1 && major="$(node -p 'process.versions.node.split(".")[0]')"
   if (( major >= 20 )); then return 0; fi
   curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
-  apt-get -o DPkg::Lock::Timeout=180 install -y nodejs
+  apt-get -o DPkg::Lock::Timeout=900 install -y nodejs
 }
 
 step_swap() {

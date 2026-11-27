@@ -1,5 +1,6 @@
 import { config, logger, query, queryOne } from "@/core";
 import type { DatacenterProvider, PowerAction, ProvisionResult } from "../types";
+import { parsePlans } from "./seed";
 import { UpcloudError, account, call, getServer, isConfigured, listServers, networkingIp, passwordOf, waitState, type ServerInfo } from "./http";
 
 /**
@@ -38,7 +39,7 @@ export function buildUserData(password: string): string {
 }
 
 /** بدنه‌ی درخواست ساخت (جدا برای تست‌پذیری) */
-export function serverBody(i: { zone: string; title: string; hostname: string; plan: string; template: string; sizeGb: number; password: string }) {
+export function serverBody(i: { zone: string; title: string; hostname: string; plan: string; template: string; sizeGb: number; tier: string; password: string }) {
   const api = config.upcloud.passwordMode === "api";
   return {
     server: {
@@ -49,9 +50,19 @@ export function serverBody(i: { zone: string; title: string; hostname: string; p
       metadata: "yes", // تمپلیت‌های cloud-init بدون metadata ساخته نمی‌شوند
       ...(api ? { login_user: { username: "root", create_password: "yes" }, password_delivery: "none" } : { user_data: buildUserData(i.password) }),
       networking: { interfaces: { interface: [{ type: "public", ip_addresses: { ip_address: [{ family: "IPv4" }] } }] } },
-      storage_devices: { storage_device: [{ action: "clone", storage: i.template, title: `${i.hostname}-disk0`, size: i.sizeGb, tier: config.upcloud.tier }] },
+      storage_devices: { storage_device: [{ action: "clone", storage: i.template, title: `${i.hostname}-disk0`, size: i.sizeGb, tier: i.tier }] },
     },
   };
+}
+
+/** اندازه و tier دیسک هر پلن از GET /plan (کش ۱۰ دقیقه): دیسک باید دقیقاً هم‌اندازه‌ی پلن باشد وگرنه قیمت/پذیرش فرق می‌کند */
+const planCache: { at: number; v: Map<string, { diskGb: number; tier: string }> } = { at: 0, v: new Map() };
+async function planSpec(name: string): Promise<{ diskGb: number; tier: string } | null> {
+  if (Date.now() - planCache.at > 600_000) {
+    planCache.v = new Map(parsePlans(await call("GET", "/plan")).map((p) => [p.name, { diskGb: p.diskGb, tier: p.tier }]));
+    planCache.at = Date.now();
+  }
+  return planCache.v.get(name) ?? null;
 }
 
 async function provision(serviceId: number): Promise<ProvisionResult> {
@@ -66,13 +77,16 @@ async function provision(serviceId: number): Promise<ProvisionResult> {
   if (!s.login_pass) throw new UpcloudError("پسورد سرویس ثبت نشده", "config");
   const { zone } = await rowOf(serviceId);
   if (!zone) throw new UpcloudError("زون این سرویس مشخص نیست (locations.dc_ref)", "config");
-  if (!s.disk_gb || s.disk_gb <= 0) throw new UpcloudError("اندازه‌ی دیسک پلن مشخص نیست (plans.disk_gb)", "config");
+  const spec = await planSpec(s.plan);
+  const sizeGb = spec?.diskGb || s.disk_gb || 0;
+  if (sizeGb <= 0) throw new UpcloudError("اندازه‌ی دیسک پلن مشخص نیست (plans.disk_gb)", "config");
+  const tier = spec?.tier || config.upcloud.tier;
   const hostname = hostnameOf(serviceId);
 
   // idempotent: سفارش قبلاً ثبت شده (مثلاً timeout بعد از ساخت) ← همان را ادامه بده
   let uuid = (await listServers(hostname)).find((x) => x.hostname === hostname)?.uuid;
   if (!uuid) {
-    const r = await call<{ server?: { uuid?: string } }>("POST", "/server", serverBody({ zone, title: `bot-${serviceId}`, hostname, plan: s.plan, template: s.template, sizeGb: s.disk_gb, password: s.login_pass }));
+    const r = await call<{ server?: { uuid?: string } }>("POST", "/server", serverBody({ zone, title: `bot-${serviceId}`, hostname, plan: s.plan, template: s.template, sizeGb, tier, password: s.login_pass }));
     uuid = r.server?.uuid;
     if (!uuid) throw new UpcloudError("پاسخ ساخت UpCloud شناسه‌ی سرور ندارد", "http", 502);
     // پسورد ساخته‌شده‌ی UpCloud فقط همین‌جا برمی‌گردد ← فوراً ذخیره (قبل از انتظار)

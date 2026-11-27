@@ -38,7 +38,10 @@ async function main() {
         state = "maintenance";
         return send(res, 202, { server: { uuid: "srv-1", state: "maintenance", zone: body.server.zone, ...(body.server.login_user ? { password: "GenPass123" } : {}) } });
       }
-      if (p === "/server" && req.method === "GET") return send(res, 200, { servers: { server: [{ uuid: "srv-1", hostname: "up7.example.com", state, zone: "fi-hel1", title: "bot-7" }] } });
+      if (p === "/server" && req.method === "GET") {
+        if (u.searchParams.has("limit")) return send(res, 400, { error: { error_code: "LIMIT_INVALID", error_message: "The attribute limit has an invalid value." } });
+        return send(res, 200, { servers: { server: [{ uuid: "srv-1", hostname: "up7.example.com", state, zone: "fi-hel1", title: "bot-7" }] } });
+      }
       if (p === "/server/srv-1" && req.method === "GET") { if (state === "maintenance") state = "started"; return send(res, 200, { server: { uuid: "srv-1", hostname: "up7.example.com", state, zone: "fi-hel1" } }); }
       if (p === "/server/srv-1/networking") return send(res, 200, { networking: { interfaces: { interface: [
         { index: 1, type: "public", ip_addresses: { ip_address: [{ address: "203.0.113.20", family: "IPv4" }] } },
@@ -88,7 +91,7 @@ async function main() {
     assert.equal(tpl.find((x) => /ubuntu server 22\.04/i.test(x.title))?.uuid, "tpl-2204");
   });
   t("بدنه‌ی ساخت (userdata): clone دیسک هم‌اندازه‌ی پلن با tier، فقط public IPv4، metadata + user_data", async () => {
-    const b = D.serverBody({ zone: "fi-hel1", title: "bot-7", hostname: "up7.example.com", plan: "1xCPU-1GB", template: "tpl-2204", sizeGb: 25, password: "AbC123xyz" }).server as any;
+    const b = D.serverBody({ zone: "fi-hel1", title: "bot-7", hostname: "up7.example.com", plan: "1xCPU-1GB", template: "tpl-2204", sizeGb: 25, tier: "maxiops", password: "AbC123xyz" }).server as any;
     assert.equal(b.metadata, "yes");
     assert.match(b.user_data, /#cloud-config[\s\S]*root:AbC123xyz/);
     assert.equal(b.login_user, undefined);
@@ -97,7 +100,7 @@ async function main() {
   });
   t("بدنه‌ی ساخت (api): login_user با create_password و بدون user_data", async () => {
     (config.upcloud as { passwordMode: string }).passwordMode = "api";
-    const b = D.serverBody({ zone: "z", title: "t", hostname: "h", plan: "p", template: "tp", sizeGb: 25, password: "x" }) as any;
+    const b = D.serverBody({ zone: "z", title: "t", hostname: "h", plan: "p", template: "tp", sizeGb: 25, tier: "standard", password: "x" }) as any;
     assert.deepEqual(b.server.login_user, { username: "root", create_password: "yes" });
     assert.equal(b.server.password_delivery, "none");
     assert.equal(b.server.user_data, undefined);
@@ -125,6 +128,15 @@ async function main() {
     const l = await H.listServers("up7.example.com");
     assert.equal(l.find((x) => x.hostname === "up7.example.com")?.uuid, "srv-1");
     assert.match(calls.filter((c) => c.path.startsWith("/1.3/server?")).pop()!.path, /search=up7\.example\.com/);
+  });
+  t("فهرست سرورها پارامتر limit نمی‌فرستد (UpCloud مقدار 1000 را رد می‌کند)", async () => {
+    await H.listServers();
+    assert.ok(!calls.filter((c) => c.path.startsWith("/1.3/server?") || c.path === "/1.3/server").pop()!.path.includes("limit"));
+  });
+  t("انتخاب تمپلیت: Ubuntu ساده، نه نسخه‌ی NVIDIA/CUDA", async () => {
+    const tpl = [{ uuid: "nv", title: "Ubuntu Server 24.04 LTS (with NVIDIA drivers & CUDA)" }, { uuid: "ok", title: "Ubuntu Server 24.04 LTS (Noble Numbat)" }];
+    const pick = tpl.find((x) => /ubuntu[^0-9]*24\.04/i.test(x.title) && !/desktop|gpu|nvidia|cuda|minimal/i.test(x.title));
+    assert.equal(pick?.uuid, "ok");
   });
   t("تجزیه‌ی قیمت‌ها", async () => {
     assert.deepEqual(S.parsePrices("1xCPU-1GB=2500,x=0,2xCPU-4GB=9000"), { "1xCPU-1GB": 2500, "2xCPU-4GB": 9000 });

@@ -70,7 +70,7 @@ export async function seedCatalog(prices: Record<string, number> = parsePrices(p
   const keep: string[] = [];
   let upserted = 0;
   for (const rule of UBUNTU) {
-    const t = templates.find((x) => rule.re.test(String(x.title ?? "")) && !/desktop|gpu|minimal/i.test(String(x.title)));
+    const t = templates.find((x) => rule.re.test(String(x.title ?? "")) && !/desktop|gpu|nvidia|cuda|minimal/i.test(String(x.title)));
     if (!t?.uuid) continue;
     keep.push(rule.key);
     await query(
